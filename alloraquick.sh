@@ -115,8 +115,8 @@ chmod +x init.config
 ./init.config
 
 # Download and run the upgrade script
-echo "Downloading and running the upgrade script..."
-wget https://raw.githubusercontent.com/0xtnpxsgt/Allora-Comprehensive-Guide/main/upgrade-model.sh
+echo "Downloading and running the upgrade script SARIMAX..."
+wget https://raw.githubusercontent.com/leovallejo/ALLORA/ARIMAMODEL/sarimax.sh
 chmod +x upgrade-model.sh
 ./upgrade-model.sh
 
