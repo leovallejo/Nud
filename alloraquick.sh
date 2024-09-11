@@ -102,7 +102,7 @@ cat > config.json <<EOL
 EOL
 
 # Prompt user for addressKeyName and addressRestoreMnemonic
-# read -p "Enter your addressKeyName: " addressKeyName
+read -p "Enter your addressKeyName: " addressKeyName
 read -p "Enter your addressRestoreMnemonic: " addressRestoreMnemonic
 read -p "Enter your nodeRpc: " nodeRpc
 
