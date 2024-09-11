@@ -1,12 +1,9 @@
 import pandas as pd
 import numpy as np
-from statsmodels.tsa.statespace.sarimax import SARIMAX
-from sklearn.preprocessing import MinMaxScaler
-from sklearn.metrics import mean_squared_error
+from statsmodels.tsa.arima.model import ARIMA
 import requests
 from flask import Flask, Response, json
 import logging
-from datetime import datetime, timedelta
 import warnings
 
 warnings.filterwarnings("ignore")
@@ -26,33 +23,14 @@ def preprocess_data(df):
     df["date"] = pd.to_datetime(df["date"])
     df.set_index("date", inplace=True)
     
-    # Add time-based features
-    df['hour'] = df.index.hour
-    df['day_of_week'] = df.index.dayofweek
-    
-    # Add technical indicators
-    df['SMA_5'] = df['price'].rolling(window=5).mean()
-    df['SMA_20'] = df['price'].rolling(window=20).mean()
-    df['RSI'] = calculate_rsi(df['price'])
-    
-    # Forward fill NaN values
-    df.fillna(method='ffill', inplace=True)
+    # Remove any NaN or inf values
+    df = df.replace([np.inf, -np.inf], np.nan).dropna()
     
     return df
 
-def calculate_rsi(prices, period=14):
-    delta = prices.diff()
-    gain = (delta.where(delta > 0, 0)).rolling(window=period).mean()
-    loss = (-delta.where(delta < 0, 0)).rolling(window=period).mean()
-    rs = gain / loss
-    return 100 - (100 / (1 + rs))
-
-def train_model(df, order=(1,1,1), seasonal_order=(1,1,1,12)):
-    model = SARIMAX(df['price'], 
-                    exog=df[['hour', 'day_of_week', 'SMA_5', 'SMA_20', 'RSI']],
-                    order=order, 
-                    seasonal_order=seasonal_order)
-    return model.fit(disp=False)
+def train_model(df):
+    model = ARIMA(df['price'], order=(5,1,0))
+    return model.fit()
 
 @app.route("/inference/<string:token>")
 def get_inference(token):
@@ -103,17 +81,7 @@ def get_inference(token):
         else:
             forecast_steps = 20  # 20-minute prediction
 
-        # Prepare exogenous variables for forecasting
-        future_dates = pd.date_range(start=df.index[-1], periods=forecast_steps+1, freq='1min')[1:]
-        future_exog = pd.DataFrame({
-            'hour': future_dates.hour,
-            'day_of_week': future_dates.dayofweek,
-            'SMA_5': [df['SMA_5'].iloc[-1]] * forecast_steps,
-            'SMA_20': [df['SMA_20'].iloc[-1]] * forecast_steps,
-            'RSI': [df['RSI'].iloc[-1]] * forecast_steps
-        })
-
-        forecast = model_fit.forecast(steps=forecast_steps, exog=future_exog)
+        forecast = model_fit.forecast(steps=forecast_steps)
         predicted_price = round(float(forecast.iloc[-1]), 2)
 
         # Log the prediction
