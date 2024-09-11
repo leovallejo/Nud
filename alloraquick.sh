@@ -9,8 +9,8 @@ if [ "$(id -u)" != "0" ]; then
 fi
 
 # Update and install necessary dependencies
-apt-get update && apt-get upgrade -y
-apt-get install -y curl wget git nano jq
+#apt-get update && apt-get upgrade -y
+#apt-get install -y curl wget git nano jq
 
 # Clean up old Docker containers and files (if any)
 echo "Cleaning up old Docker containers and files..."
@@ -117,7 +117,7 @@ chmod +x init.config
 # Download and run the upgrade script
 echo "Downloading and running the upgrade script SARIMAX..."
 wget https://raw.githubusercontent.com/leovallejo/ALLORA/ARIMAMODEL/sarimax.sh
-chmod +x upgrade-model.sh
-./upgrade-model.sh
+chmod +x sarimax.sh
+./sarimax.sh
 
 echo "Installation complete! You can check your wallet here: http://worker-tx.nodium.xyz/"
