@@ -18,8 +18,7 @@ if [[ "$installdep" =~ ^[Yy]$ ]]; then
     rm -rf app.py
     rm -rf requirements.txt
     wget -q https://raw.githubusercontent.com/leovallejo/ALLORA/ARIMAMODEL/app.py -O /root/allora-huggingface-walkthrough/app.py
-    wget -q https://raw.githubusercontent.com/0xtnpxsgt/Allora-Comprehensive-Guide/main/requirements.txt -O /root/allora-huggingface-walkthrough/requirements.txt
-    wget -q https://github.com/0xtnpxsgt/Allora-Comprehensive-Guide/raw/main/birnn_model_optimized.pth -O /root/allora-huggingface-walkthrough/birnn_model_optimized.pth
+    wget -q https://raw.githubusercontent.com/leovallejo/ALLORA/ARIMAMODEL/requirements.txt -O /root/allora-huggingface-walkthrough/requirements.txt
     wait
 	
     echo -e "${LIGHT_BLUE}Rebuild and run a model :${RESET}"
