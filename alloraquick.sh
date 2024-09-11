@@ -31,7 +31,7 @@ cp config.example.json config.json
 cat > config.json <<EOL
 {
     "wallet": {
-        "addressKeyName": "test",
+        "addressKeyName": "zep",
         "addressRestoreMnemonic": "<your mnemonic phrase>",
         "alloraHomeDir": "/root/.allorad",
         "gas": "1000000",
@@ -39,7 +39,7 @@ cat > config.json <<EOL
         "nodeRpc": "https://rpc.ankr.com/allora_testnet/",
         "maxRetries": 1,
         "delay": 1,
-        "submitTx": false
+        "submitTx": true
     },
     "worker": [
          {
@@ -102,7 +102,7 @@ cat > config.json <<EOL
 EOL
 
 # Prompt user for addressKeyName and addressRestoreMnemonic
-read -p "Enter your addressKeyName: " addressKeyName
+# read -p "Enter your addressKeyName: " addressKeyName
 read -p "Enter your addressRestoreMnemonic: " addressRestoreMnemonic
 read -p "Enter your nodeRpc: " nodeRpc
 
