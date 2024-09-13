@@ -12,23 +12,22 @@ import traceback
 
 app = Flask(__name__)
 
-# Configure basic logging without JSON formatting
 logging.basicConfig(level=logging.DEBUG, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger("main")
 
-# Function to fetch historical data from Binance
 def get_binance_url(symbol="ETHUSDT", interval="1m", limit=1000):
     return f"https://api.binance.com/api/v3/klines?symbol={symbol}&interval={interval}&limit={limit}"
 
-# Function to create sequences for CNN input
 def create_sequences(data, sequence_length):
     sequences = []
+    targets = []
     for i in range(len(data) - sequence_length):
         seq = data[i:i+sequence_length]
+        target = data[i+sequence_length]
         sequences.append(seq)
-    return np.array(sequences)
+        targets.append(target)
+    return np.array(sequences), np.array(targets)
 
-# Function to build CNN model
 def build_cnn_model(input_shape):
     model = Sequential([
         Conv1D(64, kernel_size=3, activation='relu', input_shape=input_shape),
@@ -87,12 +86,14 @@ def get_inference(token):
             scaled_data = scaler.fit_transform(df[['price']])
 
             sequence_length = 60
-            X = create_sequences(scaled_data, sequence_length)
+            X, y = create_sequences(scaled_data, sequence_length)
             X = X.reshape((X.shape[0], X.shape[1], 1))
+
+            logger.debug(f"X shape: {X.shape}, y shape: {y.shape}")
 
             model = build_cnn_model((sequence_length, 1))
             logger.debug("Training model...")
-            model.fit(X[:-1], scaled_data[sequence_length:], epochs=50, batch_size=32, verbose=0)
+            model.fit(X, y, epochs=50, batch_size=32, verbose=0)
 
             forecast_steps = 10 if symbol in ['BTCUSDT', 'SOLUSDT'] else 20
 
