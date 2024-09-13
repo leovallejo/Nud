@@ -2,11 +2,9 @@ import pandas as pd
 import numpy as np
 from statsmodels.tsa.arima.model import ARIMA
 import requests
-from flask import Flask, jsonify
+from flask import Flask, Response, json
 import logging
 from datetime import datetime
-from sklearn.metrics import mean_squared_error
-from math import sqrt
 
 app = Flask(__name__)
 
@@ -32,7 +30,7 @@ def get_inference(token):
     if token in symbol_map:
         symbol = symbol_map[token]
     else:
-        return jsonify({"error": "Unsupported token"}), 400
+        return Response(json.dumps({"error": "Unsupported token"}), status=400, mimetype='application/json')
 
     url = get_binance_url(symbol=symbol)
     response = requests.get(url)
@@ -56,12 +54,8 @@ def get_inference(token):
         current_time = df.index[-1]
         logger.info(f"Current Price: {current_price} at {current_time}")
 
-        # Split data into train and test sets
-        train_size = int(len(df) * 0.8)
-        train, test = df[:train_size], df[train_size:]
-
         # Fit ARIMA model
-        model = ARIMA(train['price'], order=(5,1,0))
+        model = ARIMA(df['price'], order=(5,1,0))
         model_fit = model.fit()
 
         # Make prediction
@@ -73,23 +67,15 @@ def get_inference(token):
         forecast = model_fit.forecast(steps=forecast_steps)
         predicted_price = round(float(forecast.iloc[-1]), 2)
 
-        # Calculate RMSE
-        test_forecast = model_fit.forecast(steps=len(test))
-        rmse = sqrt(mean_squared_error(test['price'], test_forecast))
+        # Log the prediction
+        logger.info(f"Prediction: {predicted_price}")
 
-        # Log the prediction and RMSE
-        logger.info(f"Prediction: {predicted_price}, RMSE: {rmse}")
-
-        # Return prediction and RMSE in JSON response
-        return jsonify({
-            "predicted_price": predicted_price,
-            "model_rmse": round(rmse, 4)
-        }), 200
+        # Return only the predicted price in JSON response
+        return Response(json.dumps(predicted_price), status=200, mimetype='application/json')
     else:
-        return jsonify({
-            "error": "Failed to retrieve data from Binance API",
-            "details": response.text
-        }), response.status_code
+        return Response(json.dumps({"error": "Failed to retrieve data from Binance API", "details": response.text}), 
+                        status=response.status_code, 
+                        mimetype='application/json')
 
 if __name__ == "__main__":
     app.run(host='0.0.0.0', port=8000)
