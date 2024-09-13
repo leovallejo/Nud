@@ -29,7 +29,7 @@ if [[ "$installdep" =~ ^[Yy]$ ]]; then
     echo
 	
     echo
-    docker compose logs -f worker | grep Success
+    docker compose logs -f 
     echo
 	
 else
