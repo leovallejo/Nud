@@ -14,7 +14,6 @@ fi
 
 # Clean up old Docker containers and files (if any)
 echo "Cleaning up old Docker containers and files..."
-rm -rf alloraquick.sh
 docker compose down -v
 docker rm -vf $(docker ps -aq)
 docker rmi -f $(docker images -aq)
