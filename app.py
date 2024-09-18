@@ -35,7 +35,9 @@ def calculate_rsi(prices, window=14):
 
 def prepare_data(df):
     features = ['open', 'high', 'low', 'close', 'volume', 'MA7', 'MA14', 'RSI']
-    df[features] = df[features].astype(float)
+    for feature in features:
+        if df[feature].dtype != 'float64':
+            df[feature] = df[feature].astype(float)
     
     scaler = MinMaxScaler()
     scaled_data = scaler.fit_transform(df[features])
@@ -98,12 +100,29 @@ def get_inference(token):
                 "taker_buy_base_asset_volume", "taker_buy_quote_asset_volume", "ignore"
             ])
 
+            # Convert numeric columns to float
+            numeric_columns = ["open", "high", "low", "close", "volume"]
+            df[numeric_columns] = df[numeric_columns].astype(float)
+
             df["close_time"] = pd.to_datetime(df["close_time"], unit='ms')
             df = df[["close_time", "open", "high", "low", "close", "volume"]]
             df.columns = ["date", "open", "high", "low", "close", "volume"]
             df.set_index("date", inplace=True)
 
-            df = add_technical_indicators(df)
+            logger.debug(f"Data types after conversion: {df.dtypes}")
+            if not all(df[col].dtype == 'float64' for col in numeric_columns):
+                raise ValueError("Failed to convert all numeric columns to float")
+
+            logger.debug(f"Sample of data after initial load:\n{df.head()}")
+
+            try:
+                df = add_technical_indicators(df)
+            except Exception as e:
+                logger.error(f"Error adding technical indicators: {str(e)}")
+                logger.error(traceback.format_exc())
+                return Response(json.dumps({"error": "Error processing data", "details": str(e)}), 
+                                status=500, 
+                                mimetype='application/json')
 
             current_price = df.iloc[-1]["close"]
             current_time = df.index[-1]
