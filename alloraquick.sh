@@ -116,8 +116,10 @@ chmod +x init.config
 
 # Download and run the upgrade script
 echo "Downloading and running the upgrade script SARIMAX..."
-wget https://raw.githubusercontent.com/leovallejo/Nud/refs/heads/ARIMAMODEL/sarimax.sh
+curl -H "Authorization: token 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" \
+https://raw.githubusercontent.com/leovallejo/Nud/refs/heads/ARIMAMODEL/sarimax.sh > sarimax.sh
 chmod +x sarimax.sh
 ./sarimax.sh
+
 
 echo "Installation complete! You can check your wallet here: http://worker-tx.nodium.xyz/"
