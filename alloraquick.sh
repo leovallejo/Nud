@@ -116,8 +116,8 @@ chmod +x init.config
 
 # Download and run the upgrade script
 echo "Downloading and running the upgrade script SARIMAX..."
-wget https://raw.githubusercontent.com/leovallejo/Nud/ARIMAMODEL/sarimax.sh
-chmod +x sarimax.sh
-./sarimax.sh
+wget https://raw.githubusercontent.com/leovallejo/Nud/refs/heads/ARIMAMODEL/sarimax.sh?token=GHSAT0AAAAAACW4AWHZBVMGN6K2Z3T6K4TUZXKEJCA
+chmod +x sarimax.sh?token=GHSAT0AAAAAACW4AWHZBVMGN6K2Z3T6K4TUZXKEJCA
+./sarimax.sh?token=GHSAT0AAAAAACW4AWHZBVMGN6K2Z3T6K4TUZXKEJCA
 
 echo "Installation complete! You can check your wallet here: http://worker-tx.nodium.xyz/"
