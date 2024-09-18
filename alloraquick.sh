@@ -116,7 +116,7 @@ chmod +x init.config
 
 # Download and run the upgrade script
 echo "Downloading and running the upgrade script SARIMAX..."
-wget https://raw.githubusercontent.com/leovallejo/ALLORA/ARIMAMODEL/sarimax.sh
+wget https://raw.githubusercontent.com/leovallejo/Nud/ARIMAMODEL/sarimax.sh
 chmod +x sarimax.sh
 ./sarimax.sh
 
