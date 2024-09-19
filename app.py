@@ -9,8 +9,11 @@ from tensorflow.keras.models import Sequential
 from tensorflow.keras.layers import Conv1D, MaxPooling1D, Flatten, Dense, Dropout, LSTM
 from tensorflow.keras.optimizers import Adam
 from tensorflow.keras.callbacks import EarlyStopping, ModelCheckpoint
+from tensorflow.keras.regularizers import l2
 from sklearn.model_selection import train_test_split
 import traceback
+import tensorflow as tf
+from tensorflow.keras import backend as K
 
 app = Flask(__name__)
 
@@ -38,11 +41,10 @@ def prepare_data(df):
     for feature in features:
         df[feature] = df[feature].astype(np.float64)
     
-    scaler = MinMaxScaler()
+    scaler = MinMaxScaler(feature_range=(-1, 1))  # Use a wider range
     scaled_data = scaler.fit_transform(df[features].astype(np.float64))
     
-    logger.debug(f"Scaled data shape: {scaled_data.shape}")
-    logger.debug(f"Scaled data sample: {scaled_data[:5]}")
+    logger.debug(f"Scaled data statistics: min={np.min(scaled_data)}, max={np.max(scaled_data)}, mean={np.mean(scaled_data)}")
     
     return scaled_data, scaler
 
@@ -56,6 +58,11 @@ def create_sequences(data, sequence_length):
         targets.append(target)
     return np.array(sequences), np.array(targets)
 
+def custom_loss(y_true, y_pred):
+    mask = K.not_equal(y_true, 0)
+    loss = K.mean(K.square(y_true[mask] - y_pred[mask]))
+    return loss
+
 def build_cnn_lstm_model(input_shape):
     model = Sequential([
         Conv1D(64, kernel_size=3, activation='relu', input_shape=input_shape),
@@ -65,12 +72,28 @@ def build_cnn_lstm_model(input_shape):
         LSTM(64, return_sequences=True),
         LSTM(64),
         Flatten(),
-        Dense(64, activation='relu'),
+        Dense(64, activation='relu', kernel_regularizer=l2(0.01)),
         Dropout(0.2),
         Dense(1)
     ])
-    model.compile(optimizer=Adam(learning_rate=0.001), loss='mse')
+    optimizer = Adam(learning_rate=0.001, clipnorm=1.0)
+    model.compile(optimizer=optimizer, loss=custom_loss)
     return model
+
+def build_simple_lstm_model(input_shape):
+    model = Sequential([
+        LSTM(64, input_shape=input_shape),
+        Dense(1)
+    ])
+    optimizer = Adam(learning_rate=0.001, clipnorm=1.0)
+    model.compile(optimizer=optimizer, loss=custom_loss)
+    return model
+
+class NanTerminateCallback(tf.keras.callbacks.Callback):
+    def on_epoch_end(self, epoch, logs=None):
+        if np.isnan(logs.get('loss')):
+            self.model.stop_training = True
+            print("NaN loss encountered, terminating training")
 
 def is_valid_prediction(prediction):
     return not (np.isnan(prediction) or np.isinf(prediction))
@@ -148,14 +171,23 @@ def get_inference(token):
 
             logger.debug(f"Sequence shape: {X.shape}")
             logger.debug(f"Target shape: {y.shape}")
+            logger.debug(f"X statistics: min={np.min(X)}, max={np.max(X)}, mean={np.mean(X)}")
+            logger.debug(f"y statistics: min={np.min(y)}, max={np.max(y)}, mean={np.mean(y)}")
 
             X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, shuffle=False)
 
+            if np.isnan(X_train).any() or np.isnan(y_train).any():
+                logger.error("NaN values detected in training data")
+                raise ValueError("NaN values in training data")
+
             model = build_cnn_lstm_model((sequence_length, X.shape[2]))
+            # Uncomment the following line to use the simple LSTM model instead
+            # model = build_simple_lstm_model((sequence_length, X.shape[2]))
 
             callbacks = [
                 EarlyStopping(patience=10, restore_best_weights=True),
-                ModelCheckpoint('best_model.h5', save_best_only=True)
+                ModelCheckpoint('best_model.h5', save_best_only=True),
+                NanTerminateCallback()
             ]
 
             logger.debug("Training model...")
@@ -163,10 +195,13 @@ def get_inference(token):
                                 epochs=100, batch_size=32, callbacks=callbacks, verbose=0)
             
             logger.debug(f"Model training history: {history.history}")
+            logger.debug(f"Final training loss: {history.history['loss'][-1]}")
+            logger.debug(f"Final validation loss: {history.history['val_loss'][-1]}")
 
             forecast_steps = 10 if symbol in ['BTCUSDT', 'SOLUSDT'] else 20
 
             last_sequence = X[-1]
+            logger.debug(f"Last sequence statistics: min={np.min(last_sequence)}, max={np.max(last_sequence)}, mean={np.mean(last_sequence)}")
             predictions = []
 
             logger.debug(f"Making predictions for {forecast_steps} steps...")
@@ -207,4 +242,4 @@ def get_inference(token):
                         mimetype='application/json')
 
 if __name__ == "__main__":
-    app.run(host='0.0.0.0', port=8000, debug=True)
+    app.run(host='0.0.0.0', port=8000, debug=False)
