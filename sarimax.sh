@@ -17,7 +17,7 @@ if [[ "$installdep" =~ ^[Yy]$ ]]; then
     echo
     rm -rf app.py
     rm -rf requirements.txt
-    curl -s -H "Authorization: token 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" \
+    curl -s -H "Authorization: token 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" \
      https://raw.githubusercontent.com/leovallejo/Nud/refs/heads/ARIMAMODEL/app.py \
      -o /root/allora-huggingface-walkthrough/app.py && \
     curl -s -H "Authorization: token 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" \
