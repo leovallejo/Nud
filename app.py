@@ -23,10 +23,21 @@ logger = logging.getLogger("main")
 def get_binance_url(symbol="ETHUSDT", interval="1h", limit=5000):
     return f"https://api.binance.com/api/v3/klines?symbol={symbol}&interval={interval}&limit={limit}"
 
+def handle_nan_values(df):
+    # Forward fill NaN values
+    df = df.fillna(method='ffill')
+    # If there are still NaN values at the beginning, backward fill
+    df = df.fillna(method='bfill')
+    return df
+
 def add_technical_indicators(df):
     df['MA7'] = df['close'].rolling(window=7).mean()
     df['MA14'] = df['close'].rolling(window=14).mean()
     df['RSI'] = calculate_rsi(df['close'], window=14)
+    
+    # Handle NaN values introduced by indicators
+    df = handle_nan_values(df)
+    
     return df
 
 def calculate_rsi(prices, window=14):
@@ -38,10 +49,19 @@ def calculate_rsi(prices, window=14):
 
 def prepare_data(df):
     features = ['open', 'high', 'low', 'close', 'volume', 'MA7', 'MA14', 'RSI']
+    
+    # Handle NaN values
+    df = handle_nan_values(df)
+    
     for feature in features:
         df[feature] = df[feature].astype(np.float64)
     
-    scaler = MinMaxScaler(feature_range=(-1, 1))  # Use a wider range
+    # Check for any remaining NaN values
+    if df[features].isna().any().any():
+        logger.error("NaN values still present after handling")
+        raise ValueError("Unable to handle all NaN values")
+    
+    scaler = MinMaxScaler(feature_range=(-1, 1))
     scaled_data = scaler.fit_transform(df[features].astype(np.float64))
     
     logger.debug(f"Scaled data statistics: min={np.min(scaled_data)}, max={np.max(scaled_data)}, mean={np.mean(scaled_data)}")
@@ -153,6 +173,8 @@ def get_inference(token):
 
             try:
                 df = add_technical_indicators(df)
+                logger.debug(f"Data statistics after adding indicators:\n{df.describe()}")
+                logger.debug(f"NaN count after adding indicators:\n{df.isna().sum()}")
             except Exception as e:
                 logger.error(f"Error adding technical indicators: {str(e)}")
                 logger.error(traceback.format_exc())
@@ -164,7 +186,15 @@ def get_inference(token):
             current_time = df.index[-1]
             logger.info(f"Current Price: {current_price} at {current_time}")
 
-            scaled_data, scaler = prepare_data(df)
+            logger.debug(f"Data sample before preparation:\n{df.tail()}")
+
+            try:
+                scaled_data, scaler = prepare_data(df)
+            except ValueError as e:
+                logger.error(f"Error preparing data: {str(e)}")
+                return Response(json.dumps({"error": "Error preparing data", "details": str(e)}), 
+                                status=500, 
+                                mimetype='application/json')
 
             sequence_length = 60
             X, y = create_sequences(scaled_data, sequence_length)
