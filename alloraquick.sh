@@ -42,33 +42,6 @@ cat > config.json <<EOL
         "submitTx": true
     },
     "worker": [
-         {
-            "topicId": 1,
-            "inferenceEntrypointName": "api-worker-reputer",
-            "loopSeconds": 4,
-            "parameters": {
-                "InferenceEndpoint": "http://inference:8000/inference/{Token}",
-                "Token": "ETH"
-            }
-        },
-        {
-            "topicId": 3,
-            "inferenceEntrypointName": "api-worker-reputer",
-            "loopSeconds": 6,
-            "parameters": {
-                "InferenceEndpoint": "http://inference:8000/inference/{Token}",
-                "Token": "BTC"
-            }
-        },
-        {
-            "topicId": 5,
-            "inferenceEntrypointName": "api-worker-reputer",
-            "loopSeconds": 8,
-            "parameters": {
-                "InferenceEndpoint": "http://inference:8000/inference/{Token}",
-                "Token": "SOL"
-            }
-        },
         {
             "topicId": 7,
             "inferenceEntrypointName": "api-worker-reputer",
