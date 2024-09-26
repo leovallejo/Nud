@@ -26,8 +26,8 @@ if [[ "$installdep" =~ ^[Yy]$ ]]; then
      curl -s -H "Authorization: token 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" \
      "https://raw.githubusercontent.com/leovallejo/Nud/refs/heads/ARIMAMODEL/model.py" \
      -o /root/allora-huggingface-walkthrough/model.py && \
-     curl -s -H "Authorization: token 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" \
-     "https://raw.githubusercontent.com/leovallejo/Nud/refs/heads/ARIMAMODEL/requirements.txt" \
+     curl -s -H "Authorization: token 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" \
+     "https://raw.githubusercontent.com/leovallejo/Nud/refs/heads/ARIMAMODEL/api_client.py" \
      -o /root/allora-huggingface-walkthrough/api_client.py
     
     wait
