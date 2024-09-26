@@ -42,204 +42,7 @@ SCALER_DIR = "scalers"
 os.makedirs(MODEL_DIR, exist_ok=True)
 os.makedirs(SCALER_DIR, exist_ok=True)
 
-class AttentionLayer(Layer):
-    def __init__(self, **kwargs):
-        super(AttentionLayer, self).__init__(**kwargs)
-
-    def build(self, input_shape):
-        self.W = self.add_weight(name="att_weight", shape=(input_shape[-1], 1),
-                                 initializer="normal")
-        self.b = self.add_weight(name="att_bias", shape=(input_shape[1], 1),
-                                 initializer="zeros")
-        super(AttentionLayer, self).build(input_shape)
-
-    def call(self, x):
-        et = K.squeeze(K.tanh(K.dot(x, self.W) + self.b), axis=-1)
-        at = K.softmax(et)
-        at = K.expand_dims(at, axis=-1)
-        output = x * at
-        return K.sum(output, axis=1)
-
-    def compute_output_shape(self, input_shape):
-        return (input_shape[0], input_shape[-1])
-
-def get_binance_klines(symbol="ETHUSDT", interval="1h", limit=5000):
-    endpoint = f"{BINANCE_BASE_URL}/klines"
-    params = {
-        "symbol": symbol,
-        "interval": interval,
-        "limit": limit
-    }
-    try:
-        response = requests.get(endpoint, params=params)
-        response.raise_for_status()
-        return response.json()
-    except requests.RequestException as e:
-        logger.error(f"Error fetching klines data: {str(e)}")
-        raise
-
-def get_binance_ticker(symbol="ETHUSDT"):
-    endpoint = f"{BINANCE_BASE_URL}/ticker/price"
-    params = {"symbol": symbol}
-    try:
-        response = requests.get(endpoint, params=params)
-        response.raise_for_status()
-        return response.json()
-    except requests.RequestException as e:
-        logger.error(f"Error fetching ticker data: {str(e)}")
-        raise
-
-def handle_nan_values(df):
-    df = df.fillna(method='ffill')
-    df = df.fillna(method='bfill')
-    return df
-
-def add_technical_indicators(df):
-    df['MA7'] = df['close'].rolling(window=7).mean()
-    df['MA14'] = df['close'].rolling(window=14).mean()
-    df['RSI'] = calculate_rsi(df['close'], window=14)
-    df['MACD'] = df['close'].ewm(span=12).mean() - df['close'].ewm(span=26).mean()
-    df['MACD_Signal'] = df['MACD'].ewm(span=9).mean()
-    df['ATR'] = calculate_atr(df)
-    df = handle_nan_values(df)
-    return df
-
-def calculate_rsi(prices, window=14):
-    delta = prices.diff()
-    gain = (delta.where(delta > 0, 0)).rolling(window=window).mean()
-    loss = (-delta.where(delta < 0, 0)).rolling(window=window).mean()
-    rs = gain / np.maximum(loss, 1e-10)
-    return 100 - (100 / (1 + rs))
-
-def calculate_atr(df, period=14):
-    high_low = df['high'] - df['low']
-    high_close = np.abs(df['high'] - df['close'].shift())
-    low_close = np.abs(df['low'] - df['close'].shift())
-    ranges = pd.concat([high_low, high_close, low_close], axis=1)
-    true_range = np.max(ranges, axis=1)
-    return true_range.rolling(period).mean()
-
-def prepare_data(df):
-    features = ['open', 'high', 'low', 'close', 'volume', 'MA7', 'MA14', 'RSI', 'MACD', 'MACD_Signal', 'ATR']
-    scaler = MinMaxScaler(feature_range=(-1, 1))
-    scaled_data = scaler.fit_transform(df[features].astype(np.float64))
-    return scaled_data, scaler
-
-def create_sequences(data, sequence_length):
-    sequences = []
-    targets = []
-    for i in range(len(data) - sequence_length):
-        seq = data[i:i+sequence_length]
-        target = data[i+sequence_length, 3]  # Assuming 'close' is at index 3
-        sequences.append(seq)
-        targets.append(target)
-    return np.array(sequences), np.array(targets)
-
-def custom_loss(y_true, y_pred):
-    mse = K.mean(K.square(y_true - y_pred))
-    mae = K.mean(K.abs(y_true - y_pred))
-    huber_loss = tf.keras.losses.Huber()(y_true, y_pred)
-    return 0.4 * mse + 0.3 * mae + 0.3 * huber_loss
-
-def build_advanced_model(input_shape):
-    model = Sequential([
-        Conv1D(64, kernel_size=3, activation='elu', input_shape=input_shape),
-        MaxPooling1D(pool_size=2),
-        Conv1D(128, kernel_size=3, activation='elu'),
-        MaxPooling1D(pool_size=2),
-        Bidirectional(LSTM(64, return_sequences=True)),
-        Bidirectional(GRU(64, return_sequences=True)),
-        AttentionLayer(),
-        Dense(64, activation='elu', kernel_regularizer=l2(0.01)),
-        Dropout(0.3),
-        Dense(32, activation='elu', kernel_regularizer=l2(0.01)),
-        Dropout(0.2),
-        Dense(1)
-    ])
-    optimizer = Adam(learning_rate=0.001, clipnorm=1.0)
-    model.compile(optimizer=optimizer, loss=custom_loss, metrics=['mae', 'mse'])
-    return model
-
-class NanTerminateCallback(tf.keras.callbacks.Callback):
-    def on_epoch_end(self, epoch, logs=None):
-        if np.isnan(logs.get('loss')):
-            self.model.stop_training = True
-            logger.warning("NaN loss encountered, terminating training")
-
-def is_valid_prediction(prediction):
-    return not (np.isnan(prediction) or np.isinf(prediction))
-
-def fallback_prediction(df):
-    return round(df['close'].tail(10).mean(), 2)
-
-def sanity_check_prediction(prediction, current_price, historical_volatility):
-    max_change = min(3 * historical_volatility, 0.2)  # Cap at 20% or 3 times historical volatility
-    lower_bound = current_price * (1 - max_change)
-    upper_bound = current_price * (1 + max_change)
-    return max(min(prediction, upper_bound), lower_bound)
-
-def calculate_historical_volatility(df, window=30):
-    returns = np.log(df['close'] / df['close'].shift(1))
-    return returns.rolling(window=window).std() * np.sqrt(252)  # Annualized volatility
-
-def train_and_save_model(symbol, X, y, sequence_length):
-    tscv = TimeSeriesSplit(n_splits=5)
-    mse_scores = []
-    mae_scores = []
-
-    for train_index, val_index in tscv.split(X):
-        X_train, X_val = X[train_index], X[val_index]
-        y_train, y_val = y[train_index], y[val_index]
-
-        model = build_advanced_model((sequence_length, X.shape[2]))
-
-        callbacks = [
-            EarlyStopping(patience=15, restore_best_weights=True),
-            ModelCheckpoint(f'{MODEL_DIR}/{symbol}_best_model.h5', save_best_only=True),
-            ReduceLROnPlateau(factor=0.5, patience=5, min_lr=0.0001),
-            NanTerminateCallback()
-        ]
-
-        logger.info(f"Training model for {symbol}...")
-        history = model.fit(X_train, y_train, validation_data=(X_val, y_val), 
-                            epochs=100, batch_size=32, callbacks=callbacks, verbose=0)
-        
-        y_pred = model.predict(X_val)
-        mse = mean_squared_error(y_val, y_pred)
-        mae = mean_absolute_error(y_val, y_pred)
-        mse_scores.append(mse)
-        mae_scores.append(mae)
-
-    logger.info(f"Cross-validation MSE scores for {symbol}: {mse_scores}")
-    logger.info(f"Cross-validation MAE scores for {symbol}: {mae_scores}")
-    logger.info(f"Average MSE for {symbol}: {np.mean(mse_scores):.6f}")
-    logger.info(f"Average MAE for {symbol}: {np.mean(mae_scores):.6f}")
-
-    # Retrain on full dataset
-    model = build_advanced_model((sequence_length, X.shape[2]))
-    history = model.fit(X, y, epochs=100, batch_size=32, callbacks=callbacks, verbose=0)
-    
-    logger.info(f"Final model training completed for {symbol}. Final loss: {history.history['loss'][-1]:.6f}")
-    
-    # Save the model
-    model.save(f'{MODEL_DIR}/{symbol}_model.h5')
-    logger.info(f"Model saved for {symbol}")
-
-def load_or_train_model(symbol, X, y, sequence_length, force_retrain=False):
-    model_path = f'{MODEL_DIR}/{symbol}_model.h5'
-    if os.path.exists(model_path) and not force_retrain:
-        logger.info(f"Loading existing model for {symbol}")
-        return load_model(model_path, custom_objects={'AttentionLayer': AttentionLayer, 'custom_loss': custom_loss})
-    else:
-        logger.info(f"Training new model for {symbol}")
-        train_and_save_model(symbol, X, y, sequence_length)
-        return load_model(model_path, custom_objects={'AttentionLayer': AttentionLayer, 'custom_loss': custom_loss})
-
-def save_scaler(scaler, symbol):
-    joblib.dump(scaler, f'{SCALER_DIR}/{symbol}_scaler.pkl')
-
-def load_scaler(symbol):
-    return joblib.load(f'{SCALER_DIR}/{symbol}_scaler.pkl')
+# ... (keep all the previous functions and classes)
 
 def process_symbol(symbol):
     try:
@@ -302,4 +105,35 @@ def process_symbol(symbol):
             "symbol": symbol,
             "current_price": current_price,
             "prediction": final_prediction,
-            "historical_volatility": float(historical_
+            "historical_volatility": float(historical_volatility),
+            "timestamp": datetime.now().isoformat()
+        }
+
+    except Exception as e:
+        logger.error(f"An error occurred while processing {symbol}: {str(e)}")
+        logger.error(traceback.format_exc())
+        return {
+            "symbol": symbol,
+            "error": f"An error occurred while processing {symbol}",
+            "details": str(e)
+        }
+
+@app.route("/inference")
+def get_inference():
+    try:
+        symbols = ['ETHUSDT', 'BTCUSDT', 'BNBUSDT', 'SOLUSDT', 'ARBUSDT']
+        
+        with ThreadPoolExecutor(max_workers=len(symbols)) as executor:
+            results = list(executor.map(process_symbol, symbols))
+        
+        return Response(json.dumps(results), status=200, mimetype='application/json')
+
+    except Exception as e:
+        logger.error(f"An error occurred: {str(e)}")
+        logger.error(traceback.format_exc())
+        return Response(json.dumps({"error": "An internal server error occurred", "details": str(e)}), 
+                        status=500, 
+                        mimetype='application/json')
+
+if __name__ == "__main__":
+    app.run(host='0.0.0.0', port=8000)
