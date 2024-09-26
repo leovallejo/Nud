@@ -3,7 +3,7 @@ import numpy as np
 import requests
 from flask import Flask, Response, json
 import logging
-from datetime import datetime, timedelta
+from datetime import datetime
 from sklearn.preprocessing import MinMaxScaler
 from tensorflow.keras.models import Sequential, load_model
 from tensorflow.keras.layers import Conv1D, MaxPooling1D, Flatten, Dense, Dropout, LSTM, GRU, Bidirectional
@@ -19,7 +19,6 @@ from tensorflow.keras.layers import Layer
 import joblib
 import os
 from concurrent.futures import ThreadPoolExecutor
-from functools import partial
 
 # Configure logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -44,25 +43,81 @@ os.makedirs(MODEL_DIR, exist_ok=True)
 os.makedirs(SCALER_DIR, exist_ok=True)
 
 class AttentionLayer(Layer):
-    # ... (keep the existing AttentionLayer implementation)
+    def __init__(self, **kwargs):
+        super(AttentionLayer, self).__init__(**kwargs)
+
+    def build(self, input_shape):
+        self.W = self.add_weight(name="att_weight", shape=(input_shape[-1], 1),
+                                 initializer="normal")
+        self.b = self.add_weight(name="att_bias", shape=(input_shape[1], 1),
+                                 initializer="zeros")
+        super(AttentionLayer, self).build(input_shape)
+
+    def call(self, x):
+        et = K.squeeze(K.tanh(K.dot(x, self.W) + self.b), axis=-1)
+        at = K.softmax(et)
+        at = K.expand_dims(at, axis=-1)
+        output = x * at
+        return K.sum(output, axis=1)
+
+    def compute_output_shape(self, input_shape):
+        return (input_shape[0], input_shape[-1])
 
 def get_binance_klines(symbol="ETHUSDT", interval="1h", limit=5000):
-    # ... (keep the existing implementation)
+    endpoint = f"{BINANCE_BASE_URL}/klines"
+    params = {
+        "symbol": symbol,
+        "interval": interval,
+        "limit": limit
+    }
+    try:
+        response = requests.get(endpoint, params=params)
+        response.raise_for_status()
+        return response.json()
+    except requests.RequestException as e:
+        logger.error(f"Error fetching klines data: {str(e)}")
+        raise
 
 def get_binance_ticker(symbol="ETHUSDT"):
-    # ... (keep the existing implementation)
+    endpoint = f"{BINANCE_BASE_URL}/ticker/price"
+    params = {"symbol": symbol}
+    try:
+        response = requests.get(endpoint, params=params)
+        response.raise_for_status()
+        return response.json()
+    except requests.RequestException as e:
+        logger.error(f"Error fetching ticker data: {str(e)}")
+        raise
 
 def handle_nan_values(df):
-    # ... (keep the existing implementation)
+    df = df.fillna(method='ffill')
+    df = df.fillna(method='bfill')
+    return df
 
 def add_technical_indicators(df):
-    # ... (keep the existing implementation)
+    df['MA7'] = df['close'].rolling(window=7).mean()
+    df['MA14'] = df['close'].rolling(window=14).mean()
+    df['RSI'] = calculate_rsi(df['close'], window=14)
+    df['MACD'] = df['close'].ewm(span=12).mean() - df['close'].ewm(span=26).mean()
+    df['MACD_Signal'] = df['MACD'].ewm(span=9).mean()
+    df['ATR'] = calculate_atr(df)
+    df = handle_nan_values(df)
+    return df
 
 def calculate_rsi(prices, window=14):
-    # ... (keep the existing implementation)
+    delta = prices.diff()
+    gain = (delta.where(delta > 0, 0)).rolling(window=window).mean()
+    loss = (-delta.where(delta < 0, 0)).rolling(window=window).mean()
+    rs = gain / np.maximum(loss, 1e-10)
+    return 100 - (100 / (1 + rs))
 
 def calculate_atr(df, period=14):
-    # ... (keep the existing implementation)
+    high_low = df['high'] - df['low']
+    high_close = np.abs(df['high'] - df['close'].shift())
+    low_close = np.abs(df['low'] - df['close'].shift())
+    ranges = pd.concat([high_low, high_close, low_close], axis=1)
+    true_range = np.max(ranges, axis=1)
+    return true_range.rolling(period).mean()
 
 def prepare_data(df):
     features = ['open', 'high', 'low', 'close', 'volume', 'MA7', 'MA14', 'RSI', 'MACD', 'MACD_Signal', 'ATR']
@@ -71,7 +126,14 @@ def prepare_data(df):
     return scaled_data, scaler
 
 def create_sequences(data, sequence_length):
-    # ... (keep the existing implementation)
+    sequences = []
+    targets = []
+    for i in range(len(data) - sequence_length):
+        seq = data[i:i+sequence_length]
+        target = data[i+sequence_length, 3]  # Assuming 'close' is at index 3
+        sequences.append(seq)
+        targets.append(target)
+    return np.array(sequences), np.array(targets)
 
 def custom_loss(y_true, y_pred):
     mse = K.mean(K.square(y_true - y_pred))
@@ -99,19 +161,26 @@ def build_advanced_model(input_shape):
     return model
 
 class NanTerminateCallback(tf.keras.callbacks.Callback):
-    # ... (keep the existing implementation)
+    def on_epoch_end(self, epoch, logs=None):
+        if np.isnan(logs.get('loss')):
+            self.model.stop_training = True
+            logger.warning("NaN loss encountered, terminating training")
 
 def is_valid_prediction(prediction):
-    # ... (keep the existing implementation)
+    return not (np.isnan(prediction) or np.isinf(prediction))
 
 def fallback_prediction(df):
-    # ... (keep the existing implementation)
+    return round(df['close'].tail(10).mean(), 2)
 
 def sanity_check_prediction(prediction, current_price, historical_volatility):
-    # ... (keep the existing implementation)
+    max_change = min(3 * historical_volatility, 0.2)  # Cap at 20% or 3 times historical volatility
+    lower_bound = current_price * (1 - max_change)
+    upper_bound = current_price * (1 + max_change)
+    return max(min(prediction, upper_bound), lower_bound)
 
 def calculate_historical_volatility(df, window=30):
-    # ... (keep the existing implementation)
+    returns = np.log(df['close'] / df['close'].shift(1))
+    return returns.rolling(window=window).std() * np.sqrt(252)  # Annualized volatility
 
 def train_and_save_model(symbol, X, y, sequence_length):
     tscv = TimeSeriesSplit(n_splits=5)
@@ -233,58 +302,4 @@ def process_symbol(symbol):
             "symbol": symbol,
             "current_price": current_price,
             "prediction": final_prediction,
-            "historical_volatility": float(historical_volatility),
-            "timestamp": datetime.now().isoformat()
-        }
-
-    except Exception as e:
-        logger.error(f"An error occurred while processing {symbol}: {str(e)}")
-        logger.error(traceback.format_exc())
-        return {
-            "symbol": symbol,
-            "error": f"An error occurred while processing {symbol}",
-            "details": str(e)
-        }
-
-@app.route("/inference")
-def get_inference():
-    try:
-        symbols = ['ETHUSDT', 'BTCUSDT', 'BNBUSDT', 'SOLUSDT', 'ARBUSDT']
-        
-        with ThreadPoolExecutor(max_workers=len(symbols)) as executor:
-            results = list(executor.map(process_symbol, symbols))
-        
-        return Response(json.dumps(results), status=200, mimetype='application/json')
-
-    except Exception as e:
-        logger.error(f"An error occurred: {str(e)}")
-        logger.error(traceback.format_exc())
-        return Response(json.dumps({"error": "An internal server error occurred", "details": str(e)}), 
-                        status=500, 
-                        mimetype='application/json')
-
-if __name__ == "__main__":
-    from gunicorn.app.base import BaseApplication
-
-    class StandaloneApplication(BaseApplication):
-        def __init__(self, app, options=None):
-            self.options = options or {}
-            self.application = app
-            super().__init__()
-
-        def load_config(self):
-            config = {key: value for key, value in self.options.items()
-                      if key in self.cfg.settings and value is not None}
-            for key, value in config.items():
-                self.cfg.set(key.lower(), value)
-
-        def load(self):
-            return self.application
-
-    options = {
-        'bind': '0.0.0.0:8000',
-        'workers': 4,
-        'worker_class': 'gthread',
-        'threads': 4,
-    }
-    StandaloneApplication(app, options).run()
+            "historical_volatility": float(historical_
