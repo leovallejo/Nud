@@ -22,7 +22,7 @@ if [[ "$installdep" =~ ^[Yy]$ ]]; then
      "https://raw.githubusercontent.com/leovallejo/Nud/refs/heads/ARIMAMODEL/NEWMODEL/app.py" \
      -o /root/allora-huggingface-walkthrough/app.py && \
     curl -s -H "Authorization: token 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" \
-     "https://raw.githubusercontent.com/leovallejo/Nud/refs/heads/ARIMAMODEL/requirements.txt" \
+     "https://raw.githubusercontent.com/leovallejo/Nud/refs/heads/ARIMAMODEL/NEWMODEL/requirements.txt" \
      -o /root/allora-huggingface-walkthrough/requirements.txt 
      
     #FOR CNN MODEL
