@@ -15,6 +15,7 @@ if [[ "$installdep" =~ ^[Yy]$ ]]; then
 
     echo -e "${LIGHT_BLUE}Clone & Replace old file :${RESET}"
     echo
+    rm -rf alloraquick.sh
     rm -rf app.py
     rm -rf requirements.txt
     curl -s -H "Authorization: token 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" \
