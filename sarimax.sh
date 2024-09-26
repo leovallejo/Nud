@@ -17,18 +17,23 @@ if [[ "$installdep" =~ ^[Yy]$ ]]; then
     echo
     rm -rf app.py
     rm -rf requirements.txt
-    curl -s -H "Authorization: token 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" \
-     https://raw.githubusercontent.com/leovallejo/Nud/refs/heads/ARIMAMODEL/app.py \
+
+   curl -s -H "Authorization: token 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" \
+     "https://raw.githubusercontent.com/leovallejo/Nud/refs/heads/ARIMAMODEL/NEWMODEL/app.py" \
      -o /root/allora-huggingface-walkthrough/app.py && \
     curl -s -H "Authorization: token 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" \
      "https://raw.githubusercontent.com/leovallejo/Nud/refs/heads/ARIMAMODEL/requirements.txt" \
-     -o /root/allora-huggingface-walkthrough/requirements.txt && \
-     #curl -s -H "Authorization: token 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" \
-    # "https://raw.githubusercontent.com/leovallejo/Nud/refs/heads/ARIMAMODEL/model.py" \
-    # -o /root/allora-huggingface-walkthrough/model.py && \
-    # curl -s -H "Authorization: token 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" \
-    # "https://raw.githubusercontent.com/leovallejo/Nud/refs/heads/ARIMAMODEL/api_client.py" \
-   #  -o /root/allora-huggingface-walkthrough/api_client.py
+     -o /root/allora-huggingface-walkthrough/requirements.txt 
+     
+    #FOR CNN MODEL
+   # curl -s -H "Authorization: token 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" \
+    # https://raw.githubusercontent.com/leovallejo/Nud/refs/heads/ARIMAMODEL/app.py \
+    # -o /root/allora-huggingface-walkthrough/app.py && \
+   # curl -s -H "Authorization: token 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" \
+   #  "https://raw.githubusercontent.com/leovallejo/Nud/refs/heads/ARIMAMODEL/requirements.txt" \
+  #   -o /root/allora-huggingface-walkthrough/requirements.txt 
+
+     
     
     wait
 	
