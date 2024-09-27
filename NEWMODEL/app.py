@@ -6,34 +6,21 @@ import logging
 from datetime import datetime, timedelta
 from sklearn.preprocessing import MinMaxScaler
 from tensorflow.keras.models import Sequential
-from tensorflow.keras.layers import Conv1D, MaxPooling1D, Flatten, Dense, Dropout, LSTM, GRU, Bidirectional
+from tensorflow.keras.layers import Conv1D, MaxPooling1D, Flatten, Dense, Dropout, LSTM
 from tensorflow.keras.optimizers import Adam
-from tensorflow.keras.callbacks import EarlyStopping, ModelCheckpoint, ReduceLROnPlateau
+from tensorflow.keras.callbacks import EarlyStopping, ModelCheckpoint
 from tensorflow.keras.regularizers import l2
 from sklearn.model_selection import train_test_split
 import traceback
 import tensorflow as tf
 from tensorflow.keras import backend as K
-from tensorflow.keras.layers import Layer
-
-# Configure logging
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
-logger = logging.getLogger(__name__)
-
-# Disable eager execution for better performance
-tf.compat.v1.disable_eager_execution()
-
-# Configure TensorFlow to use CPU only if no GPU is available
-gpus = tf.config.experimental.list_physical_devices('GPU')
-if not gpus:
-    logger.info("No GPUs available. Using CPU.")
-    tf.config.set_visible_devices([], 'GPU')
 
 app = Flask(__name__)
 
-BINANCE_BASE_URL = "https://api.binance.com/api/v3"
+logging.basicConfig(level=logging.DEBUG, format='%(asctime)s - %(levelname)s - %(message)s')
+logger = logging.getLogger("main")
 
-# ... [rest of the code remains the same until the get_inference function] ...
+# ... (keep all the existing functions)
 
 @app.route("/inference/<string:token>")
 def get_inference(token):
@@ -45,7 +32,6 @@ def get_inference(token):
             'SOL': 'SOLUSDT',
             'ARB': 'ARBUSDT'
         }
-
         token = token.upper()
         if token in symbol_map:
             symbol = symbol_map[token]
@@ -53,67 +39,80 @@ def get_inference(token):
             logger.error(f"Unsupported token: {token}")
             return Response(json.dumps({"error": "Unsupported token"}), status=400, mimetype='application/json')
 
-        try:
-            klines_data = get_binance_klines(symbol=symbol)
-            current_price_data = get_binance_ticker(symbol=symbol)
-        except Exception as e:
-            logger.error(f"Failed to retrieve data from Binance API: {str(e)}")
-            return Response(json.dumps({"error": "Failed to retrieve data from Binance API", "details": str(e)}), 
-                            status=500, 
-                            mimetype='application/json')
+        url = get_binance_url(symbol=symbol, interval="1m", limit=5000)  # Changed to 1-minute intervals
+        logger.debug(f"Fetching data from URL: {url}")
+        response = requests.get(url)
 
-        # ... [data preparation and model training remains the same] ...
+        if response.status_code == 200:
+            # ... (keep data processing steps)
 
-        forecast_steps = 20  # We'll predict 20 steps for both 10 and 20 minutes
+            current_price = df.iloc[-1]["close"]
+            current_time = df.index[-1]
+            logger.info(f"Current Price: {current_price} at {current_time}")
 
-        last_sequence = X[-1]
-        predictions = []
+            # ... (keep data preparation steps)
 
-        logger.info(f"Making predictions for {forecast_steps} steps...")
-        try:
-            for i in range(forecast_steps):
-                next_pred = model.predict(last_sequence.reshape(1, sequence_length, X.shape[2]))
-                predictions.append(next_pred[0, 0])
-                last_sequence = np.roll(last_sequence, -1, axis=0)
-                last_sequence[-1] = next_pred
+            model = build_cnn_lstm_model((sequence_length, X.shape[2]))
+            callbacks = [
+                EarlyStopping(patience=10, restore_best_weights=True),
+                ModelCheckpoint('best_model.h5', save_best_only=True),
+                NanTerminateCallback()
+            ]
 
-            predicted_prices = scaler.inverse_transform(np.column_stack((predictions, np.zeros((len(predictions), X.shape[2]-1)))))
+            logger.debug("Training model...")
+            history = model.fit(X_train, y_train, validation_data=(X_test, y_test), 
+                                epochs=100, batch_size=32, callbacks=callbacks, verbose=0)
             
-            # Calculate 10-minute and 20-minute predictions
-            prediction_10min = round(float(predicted_prices[9][0]), 2)  # 10th step (index 9) for 10 minutes
-            prediction_20min = round(float(predicted_prices[-1][0]), 2)  # Last step for 20 minutes
+            logger.debug(f"Model training history: {history.history}")
 
-            if not is_valid_prediction(prediction_10min) or not is_valid_prediction(prediction_20min):
-                logger.warning("Main prediction invalid, using fallback method")
-                prediction_10min = fallback_prediction(df)
-                prediction_20min = fallback_prediction(df)
-        except Exception as e:
-            logger.error(f"Error in main prediction: {str(e)}")
-            logger.warning("Using fallback prediction method")
-            prediction_10min = fallback_prediction(df)
-            prediction_20min = fallback_prediction(df)
+            # Make predictions for both 10 and 20 minutes
+            predictions_10min = make_predictions(model, X, scaler, steps=10)
+            predictions_20min = make_predictions(model, X, scaler, steps=20)
 
-        prediction_10min = sanity_check_prediction(prediction_10min, current_price)
-        prediction_20min = sanity_check_prediction(prediction_20min, current_price)
+            # Sanity check and format predictions
+            final_prediction_10min = sanity_check_prediction(predictions_10min[-1], current_price)
+            final_prediction_20min = sanity_check_prediction(predictions_20min[-1], current_price)
 
-        logger.info(f"10-minute Prediction: {prediction_10min}")
-        logger.info(f"20-minute Prediction: {prediction_20min}")
+            prediction_time_10min = current_time + timedelta(minutes=10)
+            prediction_time_20min = current_time + timedelta(minutes=20)
 
-        result = {
-            "10min_prediction": prediction_10min,
-            "20min_prediction": prediction_20min,
-            "current_price": current_price,
-            "timestamp": datetime.now().isoformat()
-        }
+            result = {
+                "current_price": round(float(current_price), 2),
+                "current_time": current_time.isoformat(),
+                "prediction_10min": {
+                    "price": round(float(final_prediction_10min), 2),
+                    "time": prediction_time_10min.isoformat()
+                },
+                "prediction_20min": {
+                    "price": round(float(final_prediction_20min), 2),
+                    "time": prediction_time_20min.isoformat()
+                }
+            }
 
-        return Response(json.dumps(result), status=200, mimetype='application/json')
-
+            logger.info(f"Predictions: {result}")
+            return Response(json.dumps(result), status=200, mimetype='application/json')
+        else:
+            logger.error(f"Failed to retrieve data from Binance API. Status code: {response.status_code}")
+            return Response(json.dumps({"error": "Failed to retrieve data from Binance API", "details": response.text}), 
+                            status=response.status_code, 
+                            mimetype='application/json')
     except Exception as e:
         logger.error(f"An error occurred: {str(e)}")
         logger.error(traceback.format_exc())
         return Response(json.dumps({"error": "An internal server error occurred", "details": str(e)}), 
                         status=500, 
                         mimetype='application/json')
+
+def make_predictions(model, X, scaler, steps):
+    last_sequence = X[-1]
+    predictions = []
+    for i in range(steps):
+        next_pred = model.predict(last_sequence.reshape(1, X.shape[1], X.shape[2]))
+        predictions.append(next_pred[0, 0])
+        last_sequence = np.roll(last_sequence, -1, axis=0)
+        last_sequence[-1] = next_pred
+    predicted_prices = scaler.inverse_transform(np.column_stack((predictions, np.zeros((len(predictions), X.shape[2]-1)))))
+    return predicted_prices[:, 0]
 
 if __name__ == "__main__":
     app.run(host='0.0.0.0', port=8000, debug=True)
