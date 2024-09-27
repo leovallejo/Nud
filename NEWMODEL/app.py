@@ -14,14 +14,24 @@ from tensorflow.keras.models import Model
 from tensorflow.keras.layers import Input, Conv1D, MaxPooling1D, LSTM, Dense, Dropout, Flatten, Concatenate, Attention, BatchNormalization, GRU, Bidirectional
 from tensorflow.keras.optimizers import Adam
 from tensorflow.keras.regularizers import l2
-from tensorflow.keras.layers import LeakyReLU
 
 app = Flask(__name__)
 
 logging.basicConfig(level=logging.DEBUG, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger("main")
 
-# ... (keep the existing utility functions like get_binance_url, handle_nan_values, etc.)
+def get_binance_url(symbol="ETHUSDT", interval="1h", limit=5000):
+    return f"https://api.binance.com/api/v3/klines?symbol={symbol}&interval={interval}&limit={limit}"
+
+def handle_nan_values(df):
+    return df.fillna(method='ffill').fillna(method='bfill')
+
+def calculate_rsi(prices, window=14):
+    delta = prices.diff()
+    gain = (delta.where(delta > 0, 0)).rolling(window=window).mean()
+    loss = (-delta.where(delta < 0, 0)).rolling(window=window).mean()
+    rs = gain / loss.replace(0, np.finfo(float).eps)
+    return 100 - (100 / (1 + rs))
 
 def add_advanced_features(df):
     df['MA7'] = df['close'].rolling(window=7).mean()
@@ -33,6 +43,31 @@ def add_advanced_features(df):
     df['Bollinger_lower'] = df['close'].rolling(window=20).mean() - 2 * df['close'].rolling(window=20).std()
     df['Volume_MA'] = df['volume'].rolling(window=10).mean()
     return handle_nan_values(df)
+
+def prepare_data(df):
+    features = ['open', 'high', 'low', 'close', 'volume', 'MA7', 'MA14', 'RSI', 'MACD', 'MACD_signal', 'Bollinger_upper', 'Bollinger_lower', 'Volume_MA']
+    df = handle_nan_values(df)
+    
+    for feature in features:
+        df[feature] = df[feature].astype(np.float64)
+    
+    if df[features].isna().any().any():
+        raise ValueError("Unable to handle all NaN values")
+    
+    scaler = MinMaxScaler(feature_range=(-1, 1))
+    scaled_data = scaler.fit_transform(df[features])
+    
+    return scaled_data, scaler
+
+def create_sequences(data, sequence_length):
+    sequences = []
+    targets = []
+    for i in range(len(data) - sequence_length):
+        seq = data[i:i+sequence_length]
+        target = data[i+sequence_length, 3]  # Assuming 'close' is at index 3
+        sequences.append(seq)
+        targets.append(target)
+    return np.array(sequences), np.array(targets)
 
 def custom_activation(x):
     return tf.nn.selu(x) + tf.math.sigmoid(x)
@@ -125,12 +160,61 @@ class AdaptiveLearningRateScheduler(tf.keras.callbacks.Callback):
                 print(f'\nEpoch {epoch}: reducing learning rate to {new_lr}.')
                 self.wait = 0
 
+def is_valid_prediction(prediction):
+    return not (np.isnan(prediction) or np.isinf(prediction))
+
+def fallback_prediction(df):
+    return round(df['close'].tail(10).mean(), 2)
+
+def sanity_check_prediction(prediction, current_price):
+    max_change = 0.1  # 10% maximum change
+    lower_bound = current_price * (1 - max_change)
+    upper_bound = current_price * (1 + max_change)
+    return max(min(prediction, upper_bound), lower_bound)
+
 @app.route("/inference/<string:token>")
 def get_inference(token):
     try:
-        # ... (keep the existing code for data retrieval and preprocessing)
+        symbol_map = {
+            'ETH': 'ETHUSDT',
+            'BTC': 'BTCUSDT',
+            'BNB': 'BNBUSDT',
+            'SOL': 'SOLUSDT',
+            'ARB': 'ARBUSDT'
+        }
+
+        token = token.upper()
+        if token not in symbol_map:
+            return Response(json.dumps({"error": "Unsupported token"}), status=400, mimetype='application/json')
+
+        symbol = symbol_map[token]
+        url = get_binance_url(symbol=symbol)
+        response = requests.get(url)
+
+        if response.status_code != 200:
+            return Response(json.dumps({"error": "Failed to retrieve data from Binance API", "details": response.text}), 
+                            status=response.status_code, mimetype='application/json')
+
+        data = response.json()
+        df = pd.DataFrame(data, columns=[
+            "open_time", "open", "high", "low", "close", "volume",
+            "close_time", "quote_asset_volume", "number_of_trades",
+            "taker_buy_base_asset_volume", "taker_buy_quote_asset_volume", "ignore"
+        ])
+
+        numeric_columns = ["open", "high", "low", "close", "volume"]
+        df[numeric_columns] = df[numeric_columns].astype(float)
+
+        df["close_time"] = pd.to_datetime(df["close_time"], unit='ms')
+        df = df[["close_time", "open", "high", "low", "close", "volume"]]
+        df.columns = ["date", "open", "high", "low", "close", "volume"]
+        df.set_index("date", inplace=True)
 
         df = add_advanced_features(df)
+
+        current_price = df.iloc[-1]["close"]
+        current_time = df.index[-1]
+        logger.info(f"Current Price: {current_price} at {current_time}")
 
         scaled_data, scaler = prepare_data(df)
 
@@ -181,7 +265,7 @@ def get_inference(token):
             logger.error(f"Error in prediction: {str(e)}")
             final_prediction = fallback_prediction(df)
 
-        final_prediction = sanity_check_prediction(final_prediction, df.iloc[-1]["close"])
+        final_prediction = sanity_check_prediction(final_prediction, current_price)
 
         logger.info(f"Final Prediction: {final_prediction}")
 
