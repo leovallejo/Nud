@@ -1,242 +1,130 @@
+from flask import Flask, Response
+import requests
+import json
 import pandas as pd
 import numpy as np
-import requests
-from flask import Flask, Response, json
-import logging
-from datetime import datetime, timedelta
+from prophet import Prophet
 from sklearn.preprocessing import MinMaxScaler
 from tensorflow.keras.models import Sequential
-from tensorflow.keras.layers import Conv1D, MaxPooling1D, Flatten, Dense, Dropout, LSTM
+from tensorflow.keras.layers import LSTM, Dense, GRU
 from tensorflow.keras.optimizers import Adam
-from tensorflow.keras.callbacks import EarlyStopping, ModelCheckpoint, ReduceLROnPlateau
-from tensorflow.keras.regularizers import l2
-from sklearn.model_selection import TimeSeriesSplit
-from sklearn.metrics import mean_absolute_error, mean_squared_error
-import traceback
-import tensorflow as tf
-from tensorflow.keras import backend as K
-import os
+from datetime import datetime, timedelta
 
 app = Flask(__name__)
 
-logging.basicConfig(level=logging.DEBUG, format='%(asctime)s - %(levelname)s - %(message)s')
-logger = logging.getLogger("main")
+CMC_API_KEY = "YOUR_CMC_API_KEY_HERE"  # Replace with your CoinMarketCap API key
+CMC_BASE_URL = "https://pro-api.coinmarketcap.com/v1"
 
-CRYPTOCOMPARE_API_KEY = os.environ.get('36602828665610459eb9e9908ad2e36c04f1759605341ab774c3c50b8ed94966', '')
-
-def get_cryptocompare_data(symbol, limit=2000):
-    url = f"https://min-api.cryptocompare.com/data/v2/histominute"
-    params = {
-        'fsym': symbol,
-        'tsym': 'USD',
-        'limit': limit
+def get_cmc_historical_data(symbol, days=30):
+    url = f"{CMC_BASE_URL}/cryptocurrency/quotes/historical"
+    
+    end_date = datetime.now()
+    start_date = end_date - timedelta(days=days)
+    
+    parameters = {
+        "symbol": symbol,
+        "time_start": start_date.strftime("%Y-%m-%dT%H:%M:%S"),
+        "time_end": end_date.strftime("%Y-%m-%dT%H:%M:%S"),
+        "interval": "hourly"
     }
-    headers = {'authorization': f"Apikey {CRYPTOCOMPARE_API_KEY}"} if CRYPTOCOMPARE_API_KEY else {}
-    response = requests.get(url, params=params, headers=headers)
-    data = response.json()
-    if response.status_code == 200 and data['Response'] == 'Success':
-        df = pd.DataFrame(data['Data']['Data'])
-        df['time'] = pd.to_datetime(df['time'], unit='s')
-        df.set_index('time', inplace=True)
-        df = df[['open', 'high', 'low', 'close', 'volumefrom']]
-        df.columns = ['open', 'high', 'low', 'close', 'volume']
-        return df
+    
+    headers = {
+        "Accepts": "application/json",
+        "X-CMC_PRO_API_KEY": CMC_API_KEY
+    }
+    
+    response = requests.get(url, headers=headers, params=parameters)
+    
+    if response.status_code == 200:
+        data = response.json()
+        quotes = data["data"][symbol]["quotes"]
+        df = pd.DataFrame(quotes)
+        df["ds"] = pd.to_datetime(df["timestamp"])
+        df["y"] = df["quote.USD.price"]
+        return df[["ds", "y"]]
     else:
-        raise Exception(f"Error fetching data: {data.get('Message', 'Unknown error')}")
+        raise Exception(f"Failed to retrieve data: {response.text}")
 
-def handle_nan_values(df):
-    df = df.fillna(method='ffill')
-    df = df.fillna(method='bfill')
-    return df
+def prepare_data(data, time_steps):
+    X, y = [], []
+    for i in range(len(data) - time_steps):
+        X.append(data[i:(i + time_steps), 0])
+        y.append(data[i + time_steps, 0])
+    return np.array(X), np.array(y)
 
-def add_technical_indicators(df):
-    df['MA7'] = df['close'].rolling(window=7).mean()
-    df['MA14'] = df['close'].rolling(window=14).mean()
-    df['RSI'] = calculate_rsi(df['close'], window=14)
-    df['EMA12'] = df['close'].ewm(span=12, adjust=False).mean()
-    df['EMA26'] = df['close'].ewm(span=26, adjust=False).mean()
-    df['MACD'] = df['EMA12'] - df['EMA26']
-    df['MACD_Signal'] = df['MACD'].ewm(span=9, adjust=False).mean()
-    df['MACD_Hist'] = df['MACD'] - df['MACD_Signal']
-    df['BB_Middle'] = df['close'].rolling(window=20).mean()
-    df['BB_Upper'] = df['BB_Middle'] + (df['close'].rolling(window=20).std() * 2)
-    df['BB_Lower'] = df['BB_Middle'] - (df['close'].rolling(window=20).std() * 2)
-    df['Price_Momentum'] = df['close'].pct_change(periods=5)
-    df = handle_nan_values(df)
-    return df
-
-def calculate_rsi(prices, window=14):
-    delta = prices.diff()
-    gain = (delta.where(delta > 0, 0)).rolling(window=window).mean()
-    loss = (-delta.where(delta < 0, 0)).rolling(window=window).mean()
-    rs = gain / np.maximum(loss, 1e-10)
-    return 100 - (100 / (1 + rs))
-
-def prepare_data(df):
-    features = ['open', 'high', 'low', 'close', 'volume', 'MA7', 'MA14', 'RSI', 'EMA12', 'EMA26', 'MACD', 'MACD_Signal', 'MACD_Hist', 'BB_Middle', 'BB_Upper', 'BB_Lower', 'Price_Momentum']
-    df = handle_nan_values(df)
-    for feature in features:
-        df[feature] = df[feature].astype(np.float64)
-    if df[features].isna().any().any():
-        logger.error("NaN values still present after handling")
-        raise ValueError("Unable to handle all NaN values")
-    scaler = MinMaxScaler(feature_range=(-1, 1))
-    scaled_data = scaler.fit_transform(df[features].astype(np.float64))
-    logger.debug(f"Scaled data statistics: min={np.min(scaled_data)}, max={np.max(scaled_data)}, mean={np.mean(scaled_data)}")
-    return scaled_data, scaler
-
-def create_sequences(data, sequence_length, prediction_length):
-    sequences = []
-    targets = []
-    for i in range(len(data) - sequence_length - prediction_length + 1):
-        seq = data[i:i+sequence_length]
-        target = data[i+sequence_length:i+sequence_length+prediction_length, 3]  # Only 'close' price
-        sequences.append(seq)
-        targets.append(target)
-    return np.array(sequences), np.array(targets)
-
-def build_cnn_lstm_model(input_shape, output_length):
+def create_lstm_model(input_shape):
     model = Sequential([
-        Conv1D(64, kernel_size=3, activation='relu', input_shape=input_shape),
-        MaxPooling1D(pool_size=2),
-        Conv1D(128, kernel_size=3, activation='relu'),
-        MaxPooling1D(pool_size=2),
-        LSTM(64, return_sequences=True),
-        LSTM(64),
-        Flatten(),
-        Dense(64, activation='relu', kernel_regularizer=l2(0.01)),
-        Dropout(0.2),
-        Dense(output_length)
+        LSTM(units=50, return_sequences=True, input_shape=input_shape),
+        LSTM(units=50),
+        Dense(1)
     ])
-    optimizer = Adam(learning_rate=0.001, clipnorm=1.0)
-    model.compile(optimizer=optimizer, loss='mse')  # Explicitly use 'mse'
+    model.compile(optimizer=Adam(learning_rate=0.001), loss='mean_squared_error')
     return model
 
-class NanTerminateCallback(tf.keras.callbacks.Callback):
-    def on_epoch_end(self, epoch, logs=None):
-        if np.isnan(logs.get('loss')):
-            self.model.stop_training = True
-            print("NaN loss encountered, terminating training")
-
-def augment_data(X, y, noise_level=0.01):
-    X_aug = X + np.random.normal(0, noise_level, X.shape)
-    y_aug = y + np.random.normal(0, noise_level, y.shape)
-    return np.vstack((X, X_aug)), np.vstack((y, y_aug))
-
-def make_predictions(model, X, scaler, steps):
-    predictions = model.predict(X[-1:])
-    # Reshape predictions to match the original feature shape
-    reshaped_predictions = np.zeros((predictions.shape[0], X.shape[2]))
-    reshaped_predictions[:, 3] = predictions  # Assuming 'close' is at index 3
-    predicted_prices = scaler.inverse_transform(reshaped_predictions)
-    return predicted_prices[:, 3]  # Return only the 'close' price predictions
+def create_gru_model(input_shape):
+    model = Sequential([
+        GRU(units=50, return_sequences=True, input_shape=input_shape),
+        GRU(units=50),
+        Dense(1)
+    ])
+    model.compile(optimizer=Adam(learning_rate=0.001), loss='mean_squared_error')
+    return model
 
 @app.route("/inference/<string:token>")
 def get_inference(token):
+    """Generate inference for given token using multiple models."""
     try:
-        symbol_map = {
-            'ETH': 'ETH',
-            'BTC': 'BTC',
-            'BNB': 'BNB',
-            'SOL': 'SOL',
-            'ARB': 'ARB'
-        }
-        token = token.upper()
-        if token in symbol_map:
-            symbol = symbol_map[token]
-        else:
-            logger.error(f"Unsupported token: {token}")
-            return Response(json.dumps({"error": "Unsupported token"}), status=400, mimetype='application/json')
-
-        logger.debug(f"Fetching data for {symbol}")
-        df = get_cryptocompare_data(symbol, limit=2000)  # Fetch 2000 minutes of data
-
-        logger.debug(f"Data types after conversion: {df.dtypes}")
-        logger.debug(f"Sample of data after initial load:\n{df.head()}")
-
-        try:
-            df = add_technical_indicators(df)
-            logger.debug(f"Data statistics after adding indicators:\n{df.describe()}")
-            logger.debug(f"NaN count after adding indicators:\n{df.isna().sum()}")
-        except Exception as e:
-            logger.error(f"Error adding technical indicators: {str(e)}")
-            logger.error(traceback.format_exc())
-            return Response(json.dumps({"error": "Error processing data", "details": str(e)}), 
-                            status=500, 
-                            mimetype='application/json')
-
-        current_price = df.iloc[-1]["close"]
-        current_time = df.index[-1]
-        logger.info(f"Current Price: {current_price} at {current_time}")
-
-        logger.debug(f"Data sample before preparation:\n{df.tail()}")
-
-        try:
-            scaled_data, scaler = prepare_data(df)
-        except ValueError as e:
-            logger.error(f"Error preparing data: {str(e)}")
-            return Response(json.dumps({"error": "Error preparing data", "details": str(e)}), 
-                            status=500, 
-                            mimetype='application/json')
-
-        sequence_length = 60  # Use 60 minutes of data to predict
-        prediction_length = 20  # Predict 20 minutes ahead
-        X, y = create_sequences(scaled_data, sequence_length, prediction_length)
-
-        logger.debug(f"Sequence shape: {X.shape}")
-        logger.debug(f"Target shape: {y.shape}")
-        logger.debug(f"X statistics: min={np.min(X)}, max={np.max(X)}, mean={np.mean(X)}")
-        logger.debug(f"y statistics: min={np.min(y)}, max={np.max(y)}, mean={np.mean(y)}")
-
-        X, y = augment_data(X, y)
-
-        model = build_cnn_lstm_model((sequence_length, X.shape[2]), prediction_length)
-
-        tscv = TimeSeriesSplit(n_splits=5)
-        for train_index, val_index in tscv.split(X):
-            X_train, X_val = X[train_index], X[val_index]
-            y_train, y_val = y[train_index], y[val_index]
-            
-            model.fit(X_train, y_train, 
-                      validation_data=(X_val, y_val),
-                      epochs=100, 
-                      batch_size=32, 
-                      callbacks=[
-                          EarlyStopping(patience=20, restore_best_weights=True),
-                          ReduceLROnPlateau(factor=0.5, patience=10, min_lr=0.00001),
-                          ModelCheckpoint('best_model.h5', save_best_only=True),
-                          NanTerminateCallback()
-                      ],
-                      verbose=1)
-
-        predictions = make_predictions(model, X, scaler, steps=prediction_length)
-
-        mae = mean_absolute_error(y[-100:], model.predict(X[-100:]))
-        rmse = np.sqrt(mean_squared_error(y[-100:], model.predict(X[-100:])))
-        logger.info(f"Model Evaluation - MAE: {mae}, RMSE: {rmse}")
-
-        result = {
-            "current_price": round(float(current_price), 2),
-            "current_time": current_time.isoformat(),
-            "prediction_10min": {
-                "price": round(float(predictions[9]), 2),
-                "time": (current_time + timedelta(minutes=10)).isoformat()
-            },
-            "prediction_20min": {
-                "price": round(float(predictions[-1]), 2),
-                "time": (current_time + timedelta(minutes=20)).isoformat()
-            }
-        }
-
-        logger.info(f"Predictions: {result}")
-        return Response(json.dumps(result), status=200, mimetype='application/json')
-
+        df = get_cmc_historical_data(token.upper())
     except Exception as e:
-        logger.error(f"An error occurred: {str(e)}")
-        logger.error(traceback.format_exc())
-        return Response(json.dumps({"error": "An internal server error occurred", "details": str(e)}), 
-                        status=500, 
-                        mimetype='application/json')
+        return Response(json.dumps({"error": str(e)}), status=400, mimetype='application/json')
 
-if __name__ == "__main__":
-    app.run(host='0.0.0.0', port=8000, debug=True)
+    # Prepare data for LSTM and GRU models
+    scaler = MinMaxScaler(feature_range=(0, 1))
+    scaled_data = scaler.fit_transform(df['y'].values.reshape(-1, 1))
+
+    time_steps = 24  # Use 24 hours of historical data
+    X, y = prepare_data(scaled_data, time_steps)
+    X = np.reshape(X, (X.shape[0], X.shape[1], 1))
+
+    # LSTM Model
+    lstm_model = create_lstm_model((X.shape[1], 1))
+    lstm_model.fit(X, y, epochs=50, batch_size=32, verbose=0)
+
+    # GRU Model
+    gru_model = create_gru_model((X.shape[1], 1))
+    gru_model.fit(X, y, epochs=50, batch_size=32, verbose=0)
+
+    # Prophet Model
+    prophet_model = Prophet()
+    prophet_model.fit(df)
+
+    # Make predictions
+    last_sequence = scaled_data[-time_steps:]
+    lstm_input = np.reshape(last_sequence, (1, time_steps, 1))
+    gru_input = np.reshape(last_sequence, (1, time_steps, 1))
+
+    lstm_pred = lstm_model.predict(lstm_input)
+    gru_pred = gru_model.predict(gru_input)
+
+    future = prophet_model.make_future_dataframe(periods=1, freq='H')
+    prophet_forecast = prophet_model.predict(future)
+    prophet_pred = prophet_forecast.iloc[-1]["yhat"]
+
+    # Inverse transform LSTM and GRU predictions
+    lstm_pred = scaler.inverse_transform(lstm_pred)[0][0]
+    gru_pred = scaler.inverse_transform(gru_pred)[0][0]
+
+    # Ensemble prediction (simple average)
+    ensemble_pred = (lstm_pred + gru_pred + prophet_pred) / 3
+
+    result = {
+        "ensemble_prediction": ensemble_pred,
+        "lstm_prediction": lstm_pred,
+        "gru_prediction": gru_pred,
+        "prophet_prediction": prophet_pred
+    }
+
+    return Response(json.dumps(result), status=200, mimetype='application/json')
+
+if __name__ == '__main__':
+    app.run(host="0.0.0.0", port=8000, debug=True)
