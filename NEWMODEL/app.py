@@ -90,7 +90,7 @@ def create_sequences(data, sequence_length, prediction_length):
     targets = []
     for i in range(len(data) - sequence_length - prediction_length + 1):
         seq = data[i:i+sequence_length]
-        target = data[i+sequence_length:i+sequence_length+prediction_length, 3]  # Assuming 'close' is at index 3
+        target = data[i+sequence_length:i+sequence_length+prediction_length, 3]  # Only 'close' price
         sequences.append(seq)
         targets.append(target)
     return np.array(sequences), np.array(targets)
@@ -109,7 +109,7 @@ def build_cnn_lstm_model(input_shape, output_length):
         Dense(output_length)
     ])
     optimizer = Adam(learning_rate=0.001, clipnorm=1.0)
-    model.compile(optimizer=optimizer, loss='mse')
+    model.compile(optimizer=optimizer, loss='mse')  # Explicitly use 'mse'
     return model
 
 class NanTerminateCallback(tf.keras.callbacks.Callback):
@@ -125,8 +125,11 @@ def augment_data(X, y, noise_level=0.01):
 
 def make_predictions(model, X, scaler, steps):
     predictions = model.predict(X[-1:])
-    predicted_prices = scaler.inverse_transform(np.column_stack((predictions, np.zeros((predictions.shape[0], X.shape[2]-1)))))
-    return predicted_prices[:, 0]
+    # Reshape predictions to match the original feature shape
+    reshaped_predictions = np.zeros((predictions.shape[0], X.shape[2]))
+    reshaped_predictions[:, 3] = predictions  # Assuming 'close' is at index 3
+    predicted_prices = scaler.inverse_transform(reshaped_predictions)
+    return predicted_prices[:, 3]  # Return only the 'close' price predictions
 
 @app.route("/inference/<string:token>")
 def get_inference(token):
