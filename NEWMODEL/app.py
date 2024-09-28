@@ -12,7 +12,7 @@ from datetime import datetime, timedelta
 
 app = Flask(__name__)
 
-CMC_API_KEY = "1f99c2fb-9adb-4347-82cd-a8097bead9df"  # Replace with your CoinMarketCap API key
+CMC_API_KEY = "YOUR_CMC_API_KEY_HERE"  # Replace with your CoinMarketCap API key
 CMC_BASE_URL = "https://pro-api.coinmarketcap.com/v1"
 
 def get_cmc_historical_data(symbol, hours=24):
