@@ -1,5 +1,5 @@
 flask[async]
-gunicorn[gthread]>==20.1.0,<23.0.0
+gunicorn[gthread]>=20.1.0,<23.0.0
 transformers[torch]
 pandas
 python-dotenv==1.0.1
