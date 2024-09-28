@@ -6,22 +6,41 @@ import logging
 from datetime import datetime, timedelta
 from sklearn.preprocessing import MinMaxScaler
 from tensorflow.keras.models import Sequential
-from tensorflow.keras.layers import Conv1D, MaxPooling1D, Flatten, Dense, Dropout, LSTM
+from tensorflow.keras.layers import LSTM, Dense, Dropout
 from tensorflow.keras.optimizers import Adam
-from tensorflow.keras.callbacks import EarlyStopping, ModelCheckpoint
-from tensorflow.keras.regularizers import l2
-from sklearn.model_selection import train_test_split
+from tensorflow.keras.callbacks import EarlyStopping, ModelCheckpoint, ReduceLROnPlateau
+from sklearn.model_selection import TimeSeriesSplit
+from sklearn.metrics import mean_absolute_error, mean_squared_error
 import traceback
 import tensorflow as tf
 from tensorflow.keras import backend as K
+import os
 
 app = Flask(__name__)
 
 logging.basicConfig(level=logging.DEBUG, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger("main")
 
-def get_binance_url(symbol="ETHUSDT", interval="1m", limit=5000):
-    return f"https://api.binance.com/api/v3/klines?symbol={symbol}&interval={interval}&limit={limit}"
+# Replace with your CoinMarketCap API key
+CMC_API_KEY = os.environ.get('1f99c2fb-9adb-4347-82cd-a8097bead9df', '1f99c2fb-9adb-4347-82cd-a8097bead9df')
+
+def get_coinmarketcap_data(symbol, limit=5000):
+    url = "https://pro-api.coinmarketcap.com/v1/cryptocurrency/ohlcv/historical"
+    parameters = {
+        'symbol': symbol,
+        'time_period': '1h',
+        'count': limit
+    }
+    headers = {
+        'Accepts': 'application/json',
+        'X-CMC_PRO_API_KEY': CMC_API_KEY,
+    }
+    response = requests.get(url, headers=headers, params=parameters)
+    data = response.json()
+    if response.status_code == 200:
+        return pd.DataFrame(data['data']['quotes'])
+    else:
+        raise Exception(f"Error fetching data: {data['status']['error_message']}")
 
 def handle_nan_values(df):
     df = df.fillna(method='ffill')
@@ -32,6 +51,15 @@ def add_technical_indicators(df):
     df['MA7'] = df['close'].rolling(window=7).mean()
     df['MA14'] = df['close'].rolling(window=14).mean()
     df['RSI'] = calculate_rsi(df['close'], window=14)
+    df['EMA12'] = df['close'].ewm(span=12, adjust=False).mean()
+    df['EMA26'] = df['close'].ewm(span=26, adjust=False).mean()
+    df['MACD'] = df['EMA12'] - df['EMA26']
+    df['MACD_Signal'] = df['MACD'].ewm(span=9, adjust=False).mean()
+    df['MACD_Hist'] = df['MACD'] - df['MACD_Signal']
+    df['BB_Middle'] = df['close'].rolling(window=20).mean()
+    df['BB_Upper'] = df['BB_Middle'] + (df['close'].rolling(window=20).std() * 2)
+    df['BB_Lower'] = df['BB_Middle'] - (df['close'].rolling(window=20).std() * 2)
+    df['Price_Momentum'] = df['close'].pct_change(periods=5)
     df = handle_nan_values(df)
     return df
 
@@ -43,7 +71,7 @@ def calculate_rsi(prices, window=14):
     return 100 - (100 / (1 + rs))
 
 def prepare_data(df):
-    features = ['open', 'high', 'low', 'close', 'volume', 'MA7', 'MA14', 'RSI']
+    features = ['open', 'high', 'low', 'close', 'volume', 'MA7', 'MA14', 'RSI', 'EMA12', 'EMA26', 'MACD', 'MACD_Signal', 'MACD_Hist', 'BB_Middle', 'BB_Upper', 'BB_Lower', 'Price_Momentum']
     df = handle_nan_values(df)
     for feature in features:
         df[feature] = df[feature].astype(np.float64)
@@ -55,36 +83,29 @@ def prepare_data(df):
     logger.debug(f"Scaled data statistics: min={np.min(scaled_data)}, max={np.max(scaled_data)}, mean={np.mean(scaled_data)}")
     return scaled_data, scaler
 
-def create_sequences(data, sequence_length):
+def create_sequences(data, sequence_length, prediction_length):
     sequences = []
     targets = []
-    for i in range(len(data) - sequence_length):
+    for i in range(len(data) - sequence_length - prediction_length + 1):
         seq = data[i:i+sequence_length]
-        target = data[i+sequence_length, 3]
+        target = data[i+sequence_length:i+sequence_length+prediction_length, 3]  # Assuming 'close' is at index 3
         sequences.append(seq)
         targets.append(target)
     return np.array(sequences), np.array(targets)
 
-def custom_loss(y_true, y_pred):
-    mask = K.not_equal(y_true, 0)
-    loss = K.mean(K.square(y_true[mask] - y_pred[mask]))
-    return loss
-
-def build_cnn_lstm_model(input_shape):
+def build_advanced_model(input_shape, output_length):
     model = Sequential([
-        Conv1D(64, kernel_size=3, activation='relu', input_shape=input_shape),
-        MaxPooling1D(pool_size=2),
-        Conv1D(128, kernel_size=3, activation='relu'),
-        MaxPooling1D(pool_size=2),
-        LSTM(64, return_sequences=True),
-        LSTM(64),
-        Flatten(),
-        Dense(64, activation='relu', kernel_regularizer=l2(0.01)),
+        LSTM(128, return_sequences=True, input_shape=input_shape),
         Dropout(0.2),
-        Dense(1)
+        LSTM(64, return_sequences=True),
+        Dropout(0.2),
+        LSTM(32),
+        Dense(64, activation='relu'),
+        Dropout(0.2),
+        Dense(output_length)
     ])
     optimizer = Adam(learning_rate=0.001, clipnorm=1.0)
-    model.compile(optimizer=optimizer, loss=custom_loss)
+    model.compile(optimizer=optimizer, loss='mse')
     return model
 
 class NanTerminateCallback(tf.keras.callbacks.Callback):
@@ -93,38 +114,25 @@ class NanTerminateCallback(tf.keras.callbacks.Callback):
             self.model.stop_training = True
             print("NaN loss encountered, terminating training")
 
-def is_valid_prediction(prediction):
-    return not (np.isnan(prediction) or np.isinf(prediction))
-
-def fallback_prediction(df):
-    return round(df['close'].tail(10).mean(), 2)
-
-def sanity_check_prediction(prediction, current_price):
-    max_change = 0.1
-    lower_bound = current_price * (1 - max_change)
-    upper_bound = current_price * (1 + max_change)
-    return max(min(prediction, upper_bound), lower_bound)
+def augment_data(X, y, noise_level=0.01):
+    X_aug = X + np.random.normal(0, noise_level, X.shape)
+    y_aug = y + np.random.normal(0, noise_level, y.shape)
+    return np.vstack((X, X_aug)), np.vstack((y, y_aug))
 
 def make_predictions(model, X, scaler, steps):
-    last_sequence = X[-1]
-    predictions = []
-    for i in range(steps):
-        next_pred = model.predict(last_sequence.reshape(1, X.shape[1], X.shape[2]))
-        predictions.append(next_pred[0, 0])
-        last_sequence = np.roll(last_sequence, -1, axis=0)
-        last_sequence[-1] = next_pred
-    predicted_prices = scaler.inverse_transform(np.column_stack((predictions, np.zeros((len(predictions), X.shape[2]-1)))))
+    predictions = model.predict(X[-1:])
+    predicted_prices = scaler.inverse_transform(np.column_stack((predictions, np.zeros((predictions.shape[0], X.shape[2]-1)))))
     return predicted_prices[:, 0]
 
 @app.route("/inference/<string:token>")
 def get_inference(token):
     try:
         symbol_map = {
-            'ETH': 'ETHUSDT',
-            'BTC': 'BTCUSDT',
-            'BNB': 'BNBUSDT',
-            'SOL': 'SOLUSDT',
-            'ARB': 'ARBUSDT'
+            'ETH': 'ETH',
+            'BTC': 'BTC',
+            'BNB': 'BNB',
+            'SOL': 'SOL',
+            'ARB': 'ARB'
         }
         token = token.upper()
         if token in symbol_map:
@@ -133,116 +141,89 @@ def get_inference(token):
             logger.error(f"Unsupported token: {token}")
             return Response(json.dumps({"error": "Unsupported token"}), status=400, mimetype='application/json')
 
-        url = get_binance_url(symbol=symbol, interval="1m", limit=5000)
-        logger.debug(f"Fetching data from URL: {url}")
-        response = requests.get(url)
+        logger.debug(f"Fetching data for {symbol}")
+        df = get_coinmarketcap_data(symbol)
 
-        if response.status_code == 200:
-            data = response.json()
-            df = pd.DataFrame(data, columns=[
-                "open_time", "open", "high", "low", "close", "volume",
-                "close_time", "quote_asset_volume", "number_of_trades",
-                "taker_buy_base_asset_volume", "taker_buy_quote_asset_volume", "ignore"
-            ])
-            numeric_columns = ["open", "high", "low", "close", "volume"]
-            df[numeric_columns] = df[numeric_columns].astype(float)
-            df["close_time"] = pd.to_datetime(df["close_time"], unit='ms')
-            df = df[["close_time", "open", "high", "low", "close", "volume"]]
-            df.columns = ["date", "open", "high", "low", "close", "volume"]
-            df.set_index("date", inplace=True)
+        logger.debug(f"Data types after conversion: {df.dtypes}")
+        logger.debug(f"Sample of data after initial load:\n{df.head()}")
 
-            logger.debug(f"Data types after conversion: {df.dtypes}")
-            if not all(df[col].dtype == 'float64' for col in numeric_columns):
-                raise ValueError("Failed to convert all numeric columns to float")
-
-            logger.debug(f"Sample of data after initial load:\n{df.head()}")
-
-            try:
-                df = add_technical_indicators(df)
-                logger.debug(f"Data statistics after adding indicators:\n{df.describe()}")
-                logger.debug(f"NaN count after adding indicators:\n{df.isna().sum()}")
-            except Exception as e:
-                logger.error(f"Error adding technical indicators: {str(e)}")
-                logger.error(traceback.format_exc())
-                return Response(json.dumps({"error": "Error processing data", "details": str(e)}), 
-                                status=500, 
-                                mimetype='application/json')
-
-            current_price = df.iloc[-1]["close"]
-            current_time = df.index[-1]
-            logger.info(f"Current Price: {current_price} at {current_time}")
-
-            logger.debug(f"Data sample before preparation:\n{df.tail()}")
-
-            try:
-                scaled_data, scaler = prepare_data(df)
-            except ValueError as e:
-                logger.error(f"Error preparing data: {str(e)}")
-                return Response(json.dumps({"error": "Error preparing data", "details": str(e)}), 
-                                status=500, 
-                                mimetype='application/json')
-
-            sequence_length = 60
-            X, y = create_sequences(scaled_data, sequence_length)
-
-            logger.debug(f"Sequence shape: {X.shape}")
-            logger.debug(f"Target shape: {y.shape}")
-            logger.debug(f"X statistics: min={np.min(X)}, max={np.max(X)}, mean={np.mean(X)}")
-            logger.debug(f"y statistics: min={np.min(y)}, max={np.max(y)}, mean={np.mean(y)}")
-
-            X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, shuffle=False)
-
-            if np.isnan(X_train).any() or np.isnan(y_train).any():
-                logger.error("NaN values detected in training data")
-                raise ValueError("NaN values in training data")
-
-            model = build_cnn_lstm_model((sequence_length, X.shape[2]))
-
-            callbacks = [
-                EarlyStopping(patience=10, restore_best_weights=True),
-                ModelCheckpoint('best_model.h5', save_best_only=True),
-                NanTerminateCallback()
-            ]
-
-            logger.debug("Training model...")
-            history = model.fit(X_train, y_train, validation_data=(X_test, y_test), 
-                                epochs=100, batch_size=32, callbacks=callbacks, verbose=0)
-            
-            logger.debug(f"Model training history: {history.history}")
-            logger.debug(f"Final training loss: {history.history['loss'][-1]}")
-            logger.debug(f"Final validation loss: {history.history['val_loss'][-1]}")
-
-            # Make predictions for both 10 and 20 minutes
-            predictions_10min = make_predictions(model, X, scaler, steps=10)
-            predictions_20min = make_predictions(model, X, scaler, steps=20)
-
-            # Sanity check and format predictions
-            final_prediction_10min = sanity_check_prediction(predictions_10min[-1], current_price)
-            final_prediction_20min = sanity_check_prediction(predictions_20min[-1], current_price)
-
-            prediction_time_10min = current_time + timedelta(minutes=10)
-            prediction_time_20min = current_time + timedelta(minutes=20)
-
-            result = {
-                "current_price": round(float(current_price), 2),
-                "current_time": current_time.isoformat(),
-                "prediction_10min": {
-                    "price": round(float(final_prediction_10min), 2),
-                    "time": prediction_time_10min.isoformat()
-                },
-                "prediction_20min": {
-                    "price": round(float(final_prediction_20min), 2),
-                    "time": prediction_time_20min.isoformat()
-                }
-            }
-
-            logger.info(f"Predictions: {result}")
-            return Response(json.dumps(result), status=200, mimetype='application/json')
-        else:
-            logger.error(f"Failed to retrieve data from Binance API. Status code: {response.status_code}")
-            return Response(json.dumps({"error": "Failed to retrieve data from Binance API", "details": response.text}), 
-                            status=response.status_code, 
+        try:
+            df = add_technical_indicators(df)
+            logger.debug(f"Data statistics after adding indicators:\n{df.describe()}")
+            logger.debug(f"NaN count after adding indicators:\n{df.isna().sum()}")
+        except Exception as e:
+            logger.error(f"Error adding technical indicators: {str(e)}")
+            logger.error(traceback.format_exc())
+            return Response(json.dumps({"error": "Error processing data", "details": str(e)}), 
+                            status=500, 
                             mimetype='application/json')
+
+        current_price = df.iloc[-1]["close"]
+        current_time = df.index[-1]
+        logger.info(f"Current Price: {current_price} at {current_time}")
+
+        logger.debug(f"Data sample before preparation:\n{df.tail()}")
+
+        try:
+            scaled_data, scaler = prepare_data(df)
+        except ValueError as e:
+            logger.error(f"Error preparing data: {str(e)}")
+            return Response(json.dumps({"error": "Error preparing data", "details": str(e)}), 
+                            status=500, 
+                            mimetype='application/json')
+
+        sequence_length = 120
+        prediction_length = 20
+        X, y = create_sequences(scaled_data, sequence_length, prediction_length)
+
+        logger.debug(f"Sequence shape: {X.shape}")
+        logger.debug(f"Target shape: {y.shape}")
+        logger.debug(f"X statistics: min={np.min(X)}, max={np.max(X)}, mean={np.mean(X)}")
+        logger.debug(f"y statistics: min={np.min(y)}, max={np.max(y)}, mean={np.mean(y)}")
+
+        X, y = augment_data(X, y)
+
+        model = build_advanced_model((sequence_length, X.shape[2]), prediction_length)
+
+        tscv = TimeSeriesSplit(n_splits=5)
+        for train_index, val_index in tscv.split(X):
+            X_train, X_val = X[train_index], X[val_index]
+            y_train, y_val = y[train_index], y[val_index]
+            
+            model.fit(X_train, y_train, 
+                      validation_data=(X_val, y_val),
+                      epochs=100, 
+                      batch_size=32, 
+                      callbacks=[
+                          EarlyStopping(patience=20, restore_best_weights=True),
+                          ReduceLROnPlateau(factor=0.5, patience=10, min_lr=0.00001),
+                          ModelCheckpoint('best_model.h5', save_best_only=True),
+                          NanTerminateCallback()
+                      ],
+                      verbose=1)
+
+        predictions = make_predictions(model, X, scaler, steps=prediction_length)
+
+        mae = mean_absolute_error(y[-100:], model.predict(X[-100:]))
+        rmse = np.sqrt(mean_squared_error(y[-100:], model.predict(X[-100:])))
+        logger.info(f"Model Evaluation - MAE: {mae}, RMSE: {rmse}")
+
+        result = {
+            "current_price": round(float(current_price), 2),
+            "current_time": current_time.isoformat(),
+            "prediction_10min": {
+                "price": round(float(predictions[9]), 2),
+                "time": (current_time + timedelta(minutes=10)).isoformat()
+            },
+            "prediction_20min": {
+                "price": round(float(predictions[-1]), 2),
+                "time": (current_time + timedelta(minutes=20)).isoformat()
+            }
+        }
+
+        logger.info(f"Predictions: {result}")
+        return Response(json.dumps(result), status=200, mimetype='application/json')
+
     except Exception as e:
         logger.error(f"An error occurred: {str(e)}")
         logger.error(traceback.format_exc())
