@@ -12,12 +12,8 @@ matplotlib==3.5.1
 protobuf==3.19.6
 joblib==1.4.2
 prophet==1.0.1
-
-
-
-
-
-
+Cython==0.29.30
+pystan==2.19.1.1
 
 
 
