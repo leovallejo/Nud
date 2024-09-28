@@ -6,9 +6,10 @@ import logging
 from datetime import datetime, timedelta
 from sklearn.preprocessing import MinMaxScaler
 from tensorflow.keras.models import Sequential
-from tensorflow.keras.layers import LSTM, Dense, Dropout
+from tensorflow.keras.layers import Conv1D, MaxPooling1D, Flatten, Dense, Dropout, LSTM
 from tensorflow.keras.optimizers import Adam
 from tensorflow.keras.callbacks import EarlyStopping, ModelCheckpoint, ReduceLROnPlateau
+from tensorflow.keras.regularizers import l2
 from sklearn.model_selection import TimeSeriesSplit
 from sklearn.metrics import mean_absolute_error, mean_squared_error
 import traceback
@@ -21,26 +22,27 @@ app = Flask(__name__)
 logging.basicConfig(level=logging.DEBUG, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger("main")
 
-# Replace with your CoinMarketCap API key
-CMC_API_KEY = os.environ.get('1f99c2fb-9adb-4347-82cd-a8097bead9df', '1f99c2fb-9adb-4347-82cd-a8097bead9df')
+CRYPTOCOMPARE_API_KEY = os.environ.get('36602828665610459eb9e9908ad2e36c04f1759605341ab774c3c50b8ed94966', '')
 
-def get_coinmarketcap_data(symbol, limit=5000):
-    url = "https://pro-api.coinmarketcap.com/v1/cryptocurrency/ohlcv/historical"
-    parameters = {
-        'symbol': symbol,
-        'time_period': '1h',
-        'count': limit
+def get_cryptocompare_data(symbol, limit=2000):
+    url = f"https://min-api.cryptocompare.com/data/v2/histominute"
+    params = {
+        'fsym': symbol,
+        'tsym': 'USD',
+        'limit': limit
     }
-    headers = {
-        'Accepts': 'application/json',
-        'X-CMC_PRO_API_KEY': CMC_API_KEY,
-    }
-    response = requests.get(url, headers=headers, params=parameters)
+    headers = {'authorization': f"Apikey {CRYPTOCOMPARE_API_KEY}"} if CRYPTOCOMPARE_API_KEY else {}
+    response = requests.get(url, params=params, headers=headers)
     data = response.json()
-    if response.status_code == 200:
-        return pd.DataFrame(data['data']['quotes'])
+    if response.status_code == 200 and data['Response'] == 'Success':
+        df = pd.DataFrame(data['Data']['Data'])
+        df['time'] = pd.to_datetime(df['time'], unit='s')
+        df.set_index('time', inplace=True)
+        df = df[['open', 'high', 'low', 'close', 'volumefrom']]
+        df.columns = ['open', 'high', 'low', 'close', 'volume']
+        return df
     else:
-        raise Exception(f"Error fetching data: {data['status']['error_message']}")
+        raise Exception(f"Error fetching data: {data.get('Message', 'Unknown error')}")
 
 def handle_nan_values(df):
     df = df.fillna(method='ffill')
@@ -93,14 +95,16 @@ def create_sequences(data, sequence_length, prediction_length):
         targets.append(target)
     return np.array(sequences), np.array(targets)
 
-def build_advanced_model(input_shape, output_length):
+def build_cnn_lstm_model(input_shape, output_length):
     model = Sequential([
-        LSTM(128, return_sequences=True, input_shape=input_shape),
-        Dropout(0.2),
+        Conv1D(64, kernel_size=3, activation='relu', input_shape=input_shape),
+        MaxPooling1D(pool_size=2),
+        Conv1D(128, kernel_size=3, activation='relu'),
+        MaxPooling1D(pool_size=2),
         LSTM(64, return_sequences=True),
-        Dropout(0.2),
-        LSTM(32),
-        Dense(64, activation='relu'),
+        LSTM(64),
+        Flatten(),
+        Dense(64, activation='relu', kernel_regularizer=l2(0.01)),
         Dropout(0.2),
         Dense(output_length)
     ])
@@ -142,7 +146,7 @@ def get_inference(token):
             return Response(json.dumps({"error": "Unsupported token"}), status=400, mimetype='application/json')
 
         logger.debug(f"Fetching data for {symbol}")
-        df = get_coinmarketcap_data(symbol)
+        df = get_cryptocompare_data(symbol, limit=2000)  # Fetch 2000 minutes of data
 
         logger.debug(f"Data types after conversion: {df.dtypes}")
         logger.debug(f"Sample of data after initial load:\n{df.head()}")
@@ -172,8 +176,8 @@ def get_inference(token):
                             status=500, 
                             mimetype='application/json')
 
-        sequence_length = 120
-        prediction_length = 20
+        sequence_length = 60  # Use 60 minutes of data to predict
+        prediction_length = 20  # Predict 20 minutes ahead
         X, y = create_sequences(scaled_data, sequence_length, prediction_length)
 
         logger.debug(f"Sequence shape: {X.shape}")
@@ -183,7 +187,7 @@ def get_inference(token):
 
         X, y = augment_data(X, y)
 
-        model = build_advanced_model((sequence_length, X.shape[2]), prediction_length)
+        model = build_cnn_lstm_model((sequence_length, X.shape[2]), prediction_length)
 
         tscv = TimeSeriesSplit(n_splits=5)
         for train_index, val_index in tscv.split(X):
