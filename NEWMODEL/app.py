@@ -3,156 +3,128 @@ import requests
 import json
 import pandas as pd
 import numpy as np
-from prophet import Prophet
 from sklearn.preprocessing import MinMaxScaler
+from sklearn.ensemble import RandomForestRegressor
+from sklearn.svm import SVR
+from xgboost import XGBRegressor
 from tensorflow.keras.models import Sequential
-from tensorflow.keras.layers import LSTM, Dense, GRU
+from tensorflow.keras.layers import LSTM, Dense
 from tensorflow.keras.optimizers import Adam
 from datetime import datetime, timedelta
 
+# create our Flask app
 app = Flask(__name__)
 
-CMC_API_KEY = "1f99c2fb-9adb-4347-82cd-a8097bead9df"  # Replace with your CoinMarketCap API key
-CMC_BASE_URL = "https://pro-api.coinmarketcap.com/v1"
+# CoinMarketCap API settings
+CMC_API_KEY = 'YOUR_COINMARKETCAP_API_KEY'  # Replace with your actual API key
+CMC_BASE_URL = 'https://pro-api.coinmarketcap.com/v1/cryptocurrency/quotes/latest'
 
-def get_cmc_historical_data(symbol, hours=24):
-    url = f"{CMC_BASE_URL}/cryptocurrency/quotes/historical"
-    
-    end_date = datetime.now()
-    start_date = end_date - timedelta(hours=hours)
-    
-    parameters = {
-        "symbol": symbol,
-        "time_start": start_date.strftime("%Y-%m-%dT%H:%M:%S"),
-        "time_end": end_date.strftime("%Y-%m-%dT%H:%M:%S"),
-        "interval": "5m"  # 5-minute intervals
+def get_coinmarketcap_data(token):
+    params = {
+        'symbol': token,
+        'convert': 'USD'
     }
-    
     headers = {
-        "Accepts": "application/json",
-        "X-CMC_PRO_API_KEY": CMC_API_KEY
+        'Accepts': 'application/json',
+        'X-CMC_PRO_API_KEY': CMC_API_KEY,
     }
-    
-    response = requests.get(url, headers=headers, params=parameters)
-    
+    response = requests.get(CMC_BASE_URL, params=params, headers=headers)
     if response.status_code == 200:
         data = response.json()
-        quotes = data["data"][symbol]["quotes"]
-        df = pd.DataFrame(quotes)
-        df["ds"] = pd.to_datetime(df["timestamp"])
-        df["y"] = df["quote.USD.price"]
-        return df[["ds", "y"]]
+        return data['data'][token]['quote']['USD']['price']
     else:
         raise Exception(f"Failed to retrieve data: {response.text}")
 
-def prepare_data(data, time_steps):
+def create_sequences(data, seq_length):
     X, y = [], []
-    for i in range(len(data) - time_steps):
-        X.append(data[i:(i + time_steps), 0])
-        y.append(data[i + time_steps, 0])
+    for i in range(len(data) - seq_length):
+        X.append(data[i:(i + seq_length)])
+        y.append(data[i + seq_length])
     return np.array(X), np.array(y)
 
-def create_lstm_model(input_shape):
-    model = Sequential([
-        LSTM(units=50, return_sequences=True, input_shape=input_shape),
-        LSTM(units=50),
-        Dense(1)
-    ])
-    model.compile(optimizer=Adam(learning_rate=0.001), loss='mean_squared_error')
-    return model
+@app.route("/inference/<string:token>/<int:minutes>")
+def get_inference(token, minutes):
+    """Generate inference for given token and time frame."""
+    if minutes not in [10, 20]:
+        return Response(json.dumps({"error": "Only 10 or 20 minutes predictions are supported"}), 
+                        status=400, mimetype='application/json')
 
-def create_gru_model(input_shape):
-    model = Sequential([
-        GRU(units=50, return_sequences=True, input_shape=input_shape),
-        GRU(units=50),
-        Dense(1)
-    ])
-    model.compile(optimizer=Adam(learning_rate=0.001), loss='mean_squared_error')
-    return model
-
-def predict_next_n_minutes(model, last_sequence, n_minutes, time_steps):
-    predictions = []
-    current_sequence = last_sequence.copy()
-    
-    for _ in range(n_minutes):
-        input_data = np.reshape(current_sequence, (1, time_steps, 1))
-        predicted_price = model.predict(input_data)
-        predictions.append(predicted_price[0, 0])
-        current_sequence = np.roll(current_sequence, -1)
-        current_sequence[-1] = predicted_price
-    
-    return np.array(predictions)
-
-@app.route("/inference/<string:token>")
-def get_inference(token):
-    """Generate inference for given token using multiple models."""
     try:
-        df = get_cmc_historical_data(token.upper())
+        # Collect data every minute for the last hour
+        data = []
+        for _ in range(60):
+            price = get_coinmarketcap_data(token)
+            data.append(price)
+            time.sleep(60)  # Wait for 1 minute
+
+        df = pd.DataFrame(data, columns=['price'])
+        
     except Exception as e:
         return Response(json.dumps({"error": str(e)}), status=400, mimetype='application/json')
 
-    # Prepare data for LSTM and GRU models
-    scaler = MinMaxScaler(feature_range=(0, 1))
-    scaled_data = scaler.fit_transform(df['y'].values.reshape(-1, 1))
+    # Prepare data for models
+    scaler = MinMaxScaler()
+    data_scaled = scaler.fit_transform(df[['price']].values)
 
-    time_steps = 12  # Use 1 hour of historical data (12 * 5 minutes)
-    X, y = prepare_data(scaled_data, time_steps)
-    X = np.reshape(X, (X.shape[0], X.shape[1], 1))
+    seq_length = 30  # Use last 30 minutes to predict next 10 or 20 minutes
+    X, y = create_sequences(data_scaled, seq_length)
 
-    # LSTM Model
-    lstm_model = create_lstm_model((X.shape[1], 1))
+    # Prepare data for non-sequential models
+    X_2D = X.reshape((X.shape[0], -1))
+
+    # LSTM model
+    lstm_model = Sequential([
+        LSTM(50, activation='relu', input_shape=(seq_length, 1)),
+        Dense(1)
+    ])
+    lstm_model.compile(optimizer=Adam(learning_rate=0.001), loss='mse')
     lstm_model.fit(X, y, epochs=50, batch_size=32, verbose=0)
 
-    # GRU Model
-    gru_model = create_gru_model((X.shape[1], 1))
-    gru_model.fit(X, y, epochs=50, batch_size=32, verbose=0)
+    # Random Forest model
+    rf_model = RandomForestRegressor(n_estimators=100, random_state=42)
+    rf_model.fit(X_2D, y)
 
-    # Prophet Model
-    prophet_model = Prophet(interval_width=0.95)
-    prophet_model.fit(df)
+    # XGBoost model
+    xgb_model = XGBRegressor(n_estimators=100, learning_rate=0.1, random_state=42)
+    xgb_model.fit(X_2D, y)
+
+    # Support Vector Regression model
+    svr_model = SVR(kernel='rbf')
+    svr_model.fit(X_2D, y)
+
+    # Prepare data for prediction
+    last_sequence = data_scaled[-seq_length:].reshape(1, seq_length, 1)
+    last_sequence_2D = last_sequence.reshape(1, -1)
 
     # Make predictions
-    last_sequence = scaled_data[-time_steps:]
+    predictions = []
+    for _ in range(minutes):
+        lstm_pred = lstm_model.predict(last_sequence)
+        rf_pred = rf_model.predict(last_sequence_2D)
+        xgb_pred = xgb_model.predict(last_sequence_2D)
+        svr_pred = svr_model.predict(last_sequence_2D)
 
-    # LSTM and GRU predictions
-    lstm_pred_10 = predict_next_n_minutes(lstm_model, last_sequence, 2, time_steps)  # 2 * 5 minutes = 10 minutes
-    lstm_pred_20 = predict_next_n_minutes(lstm_model, last_sequence, 4, time_steps)  # 4 * 5 minutes = 20 minutes
+        # Ensemble predictions (simple average)
+        ensemble_pred = (lstm_pred + rf_pred + xgb_pred + svr_pred) / 4
 
-    gru_pred_10 = predict_next_n_minutes(gru_model, last_sequence, 2, time_steps)
-    gru_pred_20 = predict_next_n_minutes(gru_model, last_sequence, 4, time_steps)
+        predictions.append(ensemble_pred[0][0])
 
-    # Prophet predictions
-    future = prophet_model.make_future_dataframe(periods=4, freq='5T')
-    prophet_forecast = prophet_model.predict(future)
-    prophet_pred_10 = prophet_forecast.iloc[-2]["yhat"]
-    prophet_pred_20 = prophet_forecast.iloc[-1]["yhat"]
+        # Update sequences for next prediction
+        last_sequence = np.roll(last_sequence, -1, axis=1)
+        last_sequence[0, -1, 0] = ensemble_pred
+        last_sequence_2D = last_sequence.reshape(1, -1)
 
-    # Inverse transform LSTM and GRU predictions
-    lstm_pred_10 = scaler.inverse_transform(lstm_pred_10.reshape(-1, 1))[-1][0]
-    lstm_pred_20 = scaler.inverse_transform(lstm_pred_20.reshape(-1, 1))[-1][0]
-    gru_pred_10 = scaler.inverse_transform(gru_pred_10.reshape(-1, 1))[-1][0]
-    gru_pred_20 = scaler.inverse_transform(gru_pred_20.reshape(-1, 1))[-1][0]
-
-    # Ensemble predictions (simple average)
-    ensemble_pred_10 = (lstm_pred_10 + gru_pred_10 + prophet_pred_10) / 3
-    ensemble_pred_20 = (lstm_pred_20 + gru_pred_20 + prophet_pred_20) / 3
+    # Inverse transform predictions
+    forecasted_values = scaler.inverse_transform(np.array(predictions).reshape(-1, 1))
 
     result = {
-        "10_minute_predictions": {
-            "ensemble_prediction": ensemble_pred_10,
-            "lstm_prediction": lstm_pred_10,
-            "gru_prediction": gru_pred_10,
-            "prophet_prediction": prophet_pred_10
-        },
-        "20_minute_predictions": {
-            "ensemble_prediction": ensemble_pred_20,
-            "lstm_prediction": lstm_pred_20,
-            "gru_prediction": gru_pred_20,
-            "prophet_prediction": prophet_pred_20
-        }
+        "token": token,
+        "prediction_minutes": minutes,
+        "predicted_prices": forecasted_values.flatten().tolist()
     }
 
     return Response(json.dumps(result), status=200, mimetype='application/json')
 
+# run our Flask app
 if __name__ == '__main__':
     app.run(host="0.0.0.0", port=8000, debug=True)
