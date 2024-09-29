@@ -1,11 +1,12 @@
-numpy>=1.19.2,<1.22.0
+numpy==1.19.5
 Cython==0.29.30
 flask[async]
 gunicorn[gthread]>=20.1.0,<23.0.0
 transformers[torch]
-pandas
+pandas<1.4.0
 python-dotenv==1.0.1
 requests>=2.26.0,<3.0.0
 scikit-learn==1.0.2
 tensorflow==2.8.0
 pymeeus==0.5.12
+
