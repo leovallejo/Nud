@@ -13,7 +13,7 @@ import time
 app = Flask(__name__)
 
 # CoinMarketCap API setup
-CMC_API_KEY = "<Your CoinMarketCap API Key>"  # Replace with your actual API key
+CMC_API_KEY = "1f99c2fb-9adb-4347-82cd-a8097bead9df"  # Replace with your actual API key
 CMC_BASE_URL = "https://pro-api.coinmarketcap.com/v1/cryptocurrency/quotes/latest"
 
 # Ensemble model setup
