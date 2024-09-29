@@ -7,14 +7,10 @@ from sklearn.preprocessing import StandardScaler
 from sklearn.ensemble import RandomForestRegressor, GradientBoostingRegressor
 from sklearn.svm import SVR
 from sklearn.neural_network import MLPRegressor
-from datetime import datetime, timedelta
-import time
+from chronos import ChronosPipeline
+import torch
 
 app = Flask(__name__)
-
-# CoinMarketCap API setup
-CMC_API_KEY = "1f99c2fb-9adb-4347-82cd-a8097bead9df"  # Replace with your actual API key
-CMC_BASE_URL = "https://pro-api.coinmarketcap.com/v1/cryptocurrency/quotes/latest"
 
 # Ensemble model setup
 def create_ensemble_models():
@@ -29,38 +25,62 @@ def ensemble_predict(models, X):
     predictions = np.column_stack([model.predict(X) for model in models.values()])
     return np.mean(predictions, axis=1)
 
-def get_historical_data(symbol, interval_minutes=1, limit=100):
-    url = f"https://pro-api.coinmarketcap.com/v1/cryptocurrency/quotes/historical"
-    parameters = {
-        'symbol': symbol,
-        'interval': f'{interval_minutes}m',
-        'count': limit
+# Chronos model setup
+model_name = "amazon/chronos-t5-tiny"
+
+def get_coingecko_url(token):
+    base_url = "https://api.coingecko.com/api/v3/coins/"
+    token_map = {
+        'ETH': 'ethereum',
+        'SOL': 'solana',
+        'BTC': 'bitcoin',
+        'BNB': 'binancecoin',
+        'ARB': 'arbitrum'
     }
-    headers = {
-        'Accepts': 'application/json',
-        'X-CMC_PRO_API_KEY': CMC_API_KEY
-    }
-    response = requests.get(url, headers=headers, params=parameters)
-    if response.status_code == 200:
-        data = response.json()
-        prices = data['data'][symbol]['quotes']
-        df = pd.DataFrame(prices)
-        df['timestamp'] = pd.to_datetime(df['timestamp'])
-        df = df.sort_values('timestamp')
-        return df
+    
+    token = token.upper()
+    if token in token_map:
+        url = f"{base_url}{token_map[token]}/market_chart?vs_currency=usd&days=30&interval=daily"
+        return url
     else:
-        raise Exception(f"Failed to retrieve data: {response.text}")
+        raise ValueError("Unsupported token")
 
 @app.route("/inference/<string:token>")
 def get_inference(token):
     try:
-        # Fetch historical data
-        df = get_historical_data(token.upper())
+        # Chronos pipeline setup
+        chronos_pipeline = ChronosPipeline.from_pretrained(
+            model_name,
+            device_map="auto",
+            torch_dtype=torch.bfloat16,
+        )
     except Exception as e:
-        return Response(json.dumps({"error": str(e)}), status=500, mimetype='application/json')
+        return Response(json.dumps({"pipeline error": str(e)}), status=500, mimetype='application/json')
+
+    try:
+        url = get_coingecko_url(token)
+    except ValueError as e:
+        return Response(json.dumps({"error": str(e)}), status=400, mimetype='application/json')
+
+    headers = {
+        "accept": "application/json",
+        "x-cg-demo-api-key": "<Your Coingecko API key>"  # replace with your API key
+    }
+
+    response = requests.get(url, headers=headers)
+    if response.status_code == 200:
+        data = response.json()
+        df = pd.DataFrame(data["prices"])
+        df.columns = ["date", "price"]
+        df["date"] = pd.to_datetime(df["date"], unit='ms')
+        df = df[:-1]  # removing today's price
+    else:
+        return Response(json.dumps({"Failed to retrieve data from the API": str(response.text)}), 
+                        status=response.status_code, 
+                        mimetype='application/json')
 
     # Prepare data for ensemble models
-    X = df[['timestamp']].values
+    X = df[['date']].values
     y = df['price'].values
     scaler_X = StandardScaler()
     scaler_y = StandardScaler()
@@ -72,25 +92,29 @@ def get_inference(token):
     for model in ensemble_models.values():
         model.fit(X_scaled, y_scaled)
 
-    # Make 10 and 20-minute predictions
-    last_timestamp = df['timestamp'].iloc[-1]
-    next_10min = last_timestamp + timedelta(minutes=10)
-    next_20min = last_timestamp + timedelta(minutes=20)
-    
-    X_pred_10 = scaler_X.transform([[next_10min.value]])
-    X_pred_20 = scaler_X.transform([[next_20min.value]])
-    
-    ensemble_pred_10_scaled = ensemble_predict(ensemble_models, X_pred_10)
-    ensemble_pred_20_scaled = ensemble_predict(ensemble_models, X_pred_20)
-    
-    ensemble_pred_10 = scaler_y.inverse_transform(ensemble_pred_10_scaled.reshape(-1, 1)).ravel()[0]
-    ensemble_pred_20 = scaler_y.inverse_transform(ensemble_pred_20_scaled.reshape(-1, 1)).ravel()[0]
+    # Make ensemble prediction
+    last_date = df['date'].iloc[-1]
+    next_date = last_date + pd.Timedelta(days=1)
+    X_pred = scaler_X.transform([[next_date.value]])
+    ensemble_pred_scaled = ensemble_predict(ensemble_models, X_pred)
+    ensemble_pred = scaler_y.inverse_transform(ensemble_pred_scaled.reshape(-1, 1)).ravel()[0]
+
+    # Chronos prediction
+    context = torch.tensor(df["price"])
+    prediction_length = 1
+    try:
+        chronos_forecast = chronos_pipeline.predict(context, prediction_length)
+        chronos_pred = chronos_forecast[0].mean().item()
+    except Exception as e:
+        return Response(json.dumps({"error": str(e)}), status=500, mimetype='application/json')
+
+    # Combine predictions
+    final_prediction = (ensemble_pred + chronos_pred) / 2
 
     result = {
-        "10_minute_prediction": ensemble_pred_10,
-        "20_minute_prediction": ensemble_pred_20,
-        "current_price": df['price'].iloc[-1],
-        "last_updated": df['timestamp'].iloc[-1].isoformat()
+        "ensemble_prediction": ensemble_pred,
+        "chronos_prediction": chronos_pred,
+        "final_prediction": final_prediction
     }
 
     return Response(json.dumps(result), status=200, mimetype='application/json')
