@@ -25,7 +25,7 @@ if [[ "$installdep" =~ ^[Yy]$ ]]; then
      "https://raw.githubusercontent.com/leovallejo/Nud/refs/heads/ARIMAMODEL/NEWMODEL/requirements.txt" \
      -o /root/allora-huggingface-walkthrough/requirements.txt && \
      curl -s -H "Authorization: token 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" \
-     "https://raw.githubusercontent.com/leovallejo/Nud/refs/heads/ARIMAMODEL/NEWMODEL/requirements.txt" \
+     "https://raw.githubusercontent.com/leovallejo/Nud/refs/heads/ARIMAMODEL/NEWMODEL/Dockerfile" \
      -o /root/allora-huggingface-walkthrough/Dockerfile
      
      
