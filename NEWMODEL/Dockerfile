@@ -1,4 +1,4 @@
-FROM amd64/python:3.9-buster
+FROM amd64/python:3.7-buster
 
 WORKDIR /app
 
@@ -15,8 +15,9 @@ COPY requirements.txt /app/
 
 # Install Python dependencies
 RUN pip install --upgrade pip \
-    && pip install -r requirements.txt \
+    && pip install numpy==1.19.5 Cython==0.29.30 \
     && pip install pystan==2.19.1.1 \
+    && pip install -r requirements.txt \
     && pip install prophet==1.0.1
 
 # Copy the rest of the application
