@@ -3,128 +3,97 @@ import requests
 import json
 import pandas as pd
 import numpy as np
-from sklearn.preprocessing import MinMaxScaler
-from sklearn.ensemble import RandomForestRegressor
+from sklearn.preprocessing import StandardScaler
+from sklearn.ensemble import RandomForestRegressor, GradientBoostingRegressor
 from sklearn.svm import SVR
-from xgboost import XGBRegressor
-from tensorflow.keras.models import Sequential
-from tensorflow.keras.layers import LSTM, Dense
-from tensorflow.keras.optimizers import Adam
+from sklearn.neural_network import MLPRegressor
 from datetime import datetime, timedelta
+import time
 
-# create our Flask app
 app = Flask(__name__)
 
-# CoinMarketCap API settings
-CMC_API_KEY = '1f99c2fb-9adb-4347-82cd-a8097bead9df'  # Replace with your actual API key
-CMC_BASE_URL = 'https://pro-api.coinmarketcap.com/v1/cryptocurrency/quotes/latest'
+# CoinMarketCap API setup
+CMC_API_KEY = "<Your CoinMarketCap API Key>"  # Replace with your actual API key
+CMC_BASE_URL = "https://pro-api.coinmarketcap.com/v1/cryptocurrency/quotes/latest"
 
-def get_coinmarketcap_data(token):
-    params = {
-        'symbol': token,
-        'convert': 'USD'
+# Ensemble model setup
+def create_ensemble_models():
+    return {
+        'RandomForest': RandomForestRegressor(n_estimators=100, random_state=42),
+        'GradientBoosting': GradientBoostingRegressor(n_estimators=100, random_state=42),
+        'SVR': SVR(kernel='rbf'),
+        'MLP': MLPRegressor(hidden_layer_sizes=(100, 50), max_iter=1000, random_state=42)
+    }
+
+def ensemble_predict(models, X):
+    predictions = np.column_stack([model.predict(X) for model in models.values()])
+    return np.mean(predictions, axis=1)
+
+def get_historical_data(symbol, interval_minutes=1, limit=100):
+    url = f"https://pro-api.coinmarketcap.com/v1/cryptocurrency/quotes/historical"
+    parameters = {
+        'symbol': symbol,
+        'interval': f'{interval_minutes}m',
+        'count': limit
     }
     headers = {
         'Accepts': 'application/json',
-        'X-CMC_PRO_API_KEY': CMC_API_KEY,
+        'X-CMC_PRO_API_KEY': CMC_API_KEY
     }
-    response = requests.get(CMC_BASE_URL, params=params, headers=headers)
+    response = requests.get(url, headers=headers, params=parameters)
     if response.status_code == 200:
         data = response.json()
-        return data['data'][token]['quote']['USD']['price']
+        prices = data['data'][symbol]['quotes']
+        df = pd.DataFrame(prices)
+        df['timestamp'] = pd.to_datetime(df['timestamp'])
+        df = df.sort_values('timestamp')
+        return df
     else:
         raise Exception(f"Failed to retrieve data: {response.text}")
 
-def create_sequences(data, seq_length):
-    X, y = [], []
-    for i in range(len(data) - seq_length):
-        X.append(data[i:(i + seq_length)])
-        y.append(data[i + seq_length])
-    return np.array(X), np.array(y)
-
-@app.route("/inference/<string:token>/<int:minutes>")
-def get_inference(token, minutes):
-    """Generate inference for given token and time frame."""
-    if minutes not in [10, 20]:
-        return Response(json.dumps({"error": "Only 10 or 20 minutes predictions are supported"}), 
-                        status=400, mimetype='application/json')
-
+@app.route("/inference/<string:token>")
+def get_inference(token):
     try:
-        # Collect data every minute for the last hour
-        data = []
-        for _ in range(60):
-            price = get_coinmarketcap_data(token)
-            data.append(price)
-            time.sleep(60)  # Wait for 1 minute
-
-        df = pd.DataFrame(data, columns=['price'])
-        
+        # Fetch historical data
+        df = get_historical_data(token.upper())
     except Exception as e:
-        return Response(json.dumps({"error": str(e)}), status=400, mimetype='application/json')
+        return Response(json.dumps({"error": str(e)}), status=500, mimetype='application/json')
 
-    # Prepare data for models
-    scaler = MinMaxScaler()
-    data_scaled = scaler.fit_transform(df[['price']].values)
+    # Prepare data for ensemble models
+    X = df[['timestamp']].values
+    y = df['price'].values
+    scaler_X = StandardScaler()
+    scaler_y = StandardScaler()
+    X_scaled = scaler_X.fit_transform(X)
+    y_scaled = scaler_y.fit_transform(y.reshape(-1, 1)).ravel()
 
-    seq_length = 30  # Use last 30 minutes to predict next 10 or 20 minutes
-    X, y = create_sequences(data_scaled, seq_length)
+    # Train ensemble models
+    ensemble_models = create_ensemble_models()
+    for model in ensemble_models.values():
+        model.fit(X_scaled, y_scaled)
 
-    # Prepare data for non-sequential models
-    X_2D = X.reshape((X.shape[0], -1))
-
-    # LSTM model
-    lstm_model = Sequential([
-        LSTM(50, activation='relu', input_shape=(seq_length, 1)),
-        Dense(1)
-    ])
-    lstm_model.compile(optimizer=Adam(learning_rate=0.001), loss='mse')
-    lstm_model.fit(X, y, epochs=50, batch_size=32, verbose=0)
-
-    # Random Forest model
-    rf_model = RandomForestRegressor(n_estimators=100, random_state=42)
-    rf_model.fit(X_2D, y)
-
-    # XGBoost model
-    xgb_model = XGBRegressor(n_estimators=100, learning_rate=0.1, random_state=42)
-    xgb_model.fit(X_2D, y)
-
-    # Support Vector Regression model
-    svr_model = SVR(kernel='rbf')
-    svr_model.fit(X_2D, y)
-
-    # Prepare data for prediction
-    last_sequence = data_scaled[-seq_length:].reshape(1, seq_length, 1)
-    last_sequence_2D = last_sequence.reshape(1, -1)
-
-    # Make predictions
-    predictions = []
-    for _ in range(minutes):
-        lstm_pred = lstm_model.predict(last_sequence)
-        rf_pred = rf_model.predict(last_sequence_2D)
-        xgb_pred = xgb_model.predict(last_sequence_2D)
-        svr_pred = svr_model.predict(last_sequence_2D)
-
-        # Ensemble predictions (simple average)
-        ensemble_pred = (lstm_pred + rf_pred + xgb_pred + svr_pred) / 4
-
-        predictions.append(ensemble_pred[0][0])
-
-        # Update sequences for next prediction
-        last_sequence = np.roll(last_sequence, -1, axis=1)
-        last_sequence[0, -1, 0] = ensemble_pred
-        last_sequence_2D = last_sequence.reshape(1, -1)
-
-    # Inverse transform predictions
-    forecasted_values = scaler.inverse_transform(np.array(predictions).reshape(-1, 1))
+    # Make 10 and 20-minute predictions
+    last_timestamp = df['timestamp'].iloc[-1]
+    next_10min = last_timestamp + timedelta(minutes=10)
+    next_20min = last_timestamp + timedelta(minutes=20)
+    
+    X_pred_10 = scaler_X.transform([[next_10min.value]])
+    X_pred_20 = scaler_X.transform([[next_20min.value]])
+    
+    ensemble_pred_10_scaled = ensemble_predict(ensemble_models, X_pred_10)
+    ensemble_pred_20_scaled = ensemble_predict(ensemble_models, X_pred_20)
+    
+    ensemble_pred_10 = scaler_y.inverse_transform(ensemble_pred_10_scaled.reshape(-1, 1)).ravel()[0]
+    ensemble_pred_20 = scaler_y.inverse_transform(ensemble_pred_20_scaled.reshape(-1, 1)).ravel()[0]
 
     result = {
-        "token": token,
-        "prediction_minutes": minutes,
-        "predicted_prices": forecasted_values.flatten().tolist()
+        "10_minute_prediction": ensemble_pred_10,
+        "20_minute_prediction": ensemble_pred_20,
+        "current_price": df['price'].iloc[-1],
+        "last_updated": df['timestamp'].iloc[-1].isoformat()
     }
 
     return Response(json.dumps(result), status=200, mimetype='application/json')
 
-# run our Flask app
 if __name__ == '__main__':
     app.run(host="0.0.0.0", port=8000, debug=True)
