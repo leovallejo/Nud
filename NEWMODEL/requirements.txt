@@ -1,7 +1,5 @@
 numpy>=1.19.2,<1.22.0
 Cython==0.29.30
-pystan==2.19.1.1
-prophet==1.0.1
 flask[async]
 gunicorn[gthread]>=20.1.0,<23.0.0
 transformers[torch]
@@ -11,7 +9,3 @@ requests>=2.26.0,<3.0.0
 scikit-learn==1.0.2
 tensorflow==2.8.0
 pymeeus==0.5.12
-
-
-
-
