@@ -16,7 +16,7 @@ from datetime import datetime, timedelta
 app = Flask(__name__)
 
 # CoinMarketCap API settings
-CMC_API_KEY = 'YOUR_COINMARKETCAP_API_KEY'  # Replace with your actual API key
+CMC_API_KEY = '1f99c2fb-9adb-4347-82cd-a8097bead9df'  # Replace with your actual API key
 CMC_BASE_URL = 'https://pro-api.coinmarketcap.com/v1/cryptocurrency/quotes/latest'
 
 def get_coinmarketcap_data(token):
