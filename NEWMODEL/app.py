@@ -15,12 +15,12 @@ import traceback
 import tensorflow as tf
 from tensorflow.keras import backend as K
 
+def get_binance_url(symbol="ETHUSDT", interval="1h", limit=5000):
+    return f"https://api.binance.com/api/v3/klines?symbol={symbol}&interval={interval}&limit={limit}"
+
 app = Flask(__name__)
 logging.basicConfig(level=logging.DEBUG, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger("main")
-
-def get_binance_url(symbol="ETHUSDT", interval="1h", limit=5000):
-    return f"https://api.binance.com/api/v3/klines?symbol={symbol}&interval={interval}&limit={limit}"
 
 def handle_nan_values(df):
     df = df.fillna(method='ffill')
@@ -58,7 +58,7 @@ def create_sequences(data, sequence_length):
     targets = []
     for i in range(len(data) - sequence_length):
         seq = data[i:i+sequence_length]
-        target = data[i+sequence_length, 3]
+        target = data[i+sequence_length, 3]  # Assuming 'close' is at index 3
         sequences.append(seq)
         targets.append(target)
     return np.array(sequences), np.array(targets)
@@ -98,7 +98,7 @@ def fallback_prediction(df):
     return round(df['close'].tail(10).mean(), 2)
 
 def sanity_check_prediction(prediction, current_price):
-    max_change = 0.1
+    max_change = 0.1  # 10% maximum change
     lower_bound = current_price * (1 - max_change)
     upper_bound = current_price * (1 + max_change)
     return max(min(prediction, upper_bound), lower_bound)
