@@ -225,7 +225,8 @@ def get_inference(token):
             final_prediction = sanity_check_prediction(final_prediction, current_price)
             logger.info(f"Final Prediction (20 minutes): {final_prediction}")
 
-            return Response(json.dumps({"20_minute_prediction": final_prediction}), status=200, mimetype='application/json')
+            # Return the prediction as a string to avoid JSON parsing issues
+            return Response(str(final_prediction), status=200, mimetype='text/plain')
         else:
             logger.error(f"Failed to retrieve data from Binance API. Status code: {response.status_code}")
             return Response(json.dumps({"error": "Failed to retrieve data from Binance API", "details": response.text}), 
