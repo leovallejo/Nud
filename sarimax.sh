@@ -15,7 +15,7 @@ if [[ "$installdep" =~ ^[Yy]$ ]]; then
 
     echo -e "${LIGHT_BLUE}Clone & Replace old file :${RESET}"
     echo
-    rm -rf .env
+   # rm -rf .env
     rm -rf app.py
     rm -rf requirements.txt
    #NEW MODEL
@@ -24,10 +24,10 @@ if [[ "$installdep" =~ ^[Yy]$ ]]; then
      -o /root/allora-huggingface-walkthrough/app.py && \
     curl -s -H "Authorization: token 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" \
      "https://raw.githubusercontent.com/leovallejo/Nud/refs/heads/ARIMAMODEL/NEWMODEL/requirements.txt" \
-     -o /root/allora-huggingface-walkthrough/requirements.txt && \
-     curl -s -H "Authorization: token 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" \
-     "https://raw.githubusercontent.com/leovallejo/Nud/refs/heads/ARIMAMODEL/NEWMODEL/.env" \
-     -o /root/allora-huggingface-walkthrough/.env
+     -o /root/allora-huggingface-walkthrough/requirements.txt #&& \
+     #curl -s -H "Authorization: token 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" \
+     #"https://raw.githubusercontent.com/leovallejo/Nud/refs/heads/ARIMAMODEL/NEWMODEL/.env" \
+     #-o /root/allora-huggingface-walkthrough/.env
      
      
      #&& \
