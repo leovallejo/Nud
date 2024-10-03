@@ -1,3 +1,5 @@
+import os
+from dotenv import load_dotenv
 import pandas as pd
 import numpy as np
 import requests
@@ -15,7 +17,19 @@ import traceback
 import tensorflow as tf
 from tensorflow.keras import backend as K
 
-def get_binance_url(symbol="ETHUSDT", interval="1h", limit=5000):
+# Load environment variables
+load_dotenv()
+
+# Get environment variables
+TOKEN = os.getenv('TOKEN', 'ETH')
+TRAINING_DAYS = int(os.getenv('TRAINING_DAYS', 30))
+TIMEFRAME = os.getenv('TIMEFRAME', '1h')
+MODEL = os.getenv('MODEL', 'cnn_lstm')
+REGION = os.getenv('REGION', 'us-east-1')
+DATA_PROVIDER = os.getenv('DATA_PROVIDER', 'binance')
+CG_API_KEY = os.getenv('CG_API_KEY')
+
+def get_binance_url(symbol=f"{TOKEN}USDT", interval=TIMEFRAME, limit=TRAINING_DAYS * 24):
     return f"https://api.binance.com/api/v3/klines?symbol={symbol}&interval={interval}&limit={limit}"
 
 app = Flask(__name__)
@@ -223,7 +237,10 @@ def get_inference(token):
                 "current_price": current_price,
                 "prediction_10min": predicted_price_10min,
                 "prediction_20min": predicted_price_20min,
-                "prediction_24h": predicted_price_24h
+                "prediction_24h": predicted_price_24h,
+                "model": MODEL,
+                "region": REGION,
+                "data_provider": DATA_PROVIDER
             }
 
             return jsonify(result), 200
