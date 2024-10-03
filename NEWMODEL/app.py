@@ -1,7 +1,7 @@
 import pandas as pd
 import numpy as np
 import requests
-from flask import Flask, Response, json, jsonify
+from flask import Flask, jsonify
 import logging
 from datetime import datetime, timedelta
 from sklearn.preprocessing import MinMaxScaler
@@ -140,7 +140,7 @@ def get_inference(token):
             symbol = symbol_map[token]
         else:
             logger.error(f"Unsupported token: {token}")
-            return Response(json.dumps({"error": "Unsupported token"}), status=400, mimetype='application/json')
+            return jsonify({"error": "Unsupported token"}), 400
 
         url = get_binance_url(symbol=symbol)
         logger.debug(f"Fetching data from URL: {url}")
@@ -165,11 +165,9 @@ def get_inference(token):
             except Exception as e:
                 logger.error(f"Error adding technical indicators: {str(e)}")
                 logger.error(traceback.format_exc())
-                return Response(json.dumps({"error": "Error processing data", "details": str(e)}),
-                                status=500,
-                                mimetype='application/json')
+                return jsonify({"error": "Error processing data", "details": str(e)}), 500
 
-            current_price = df.iloc[-1]["close"]
+            current_price = float(df.iloc[-1]["close"])
             current_time = df.index[-1]
             logger.info(f"Current Price: {current_price} at {current_time}")
 
@@ -177,9 +175,7 @@ def get_inference(token):
                 scaled_data, scaler = prepare_data(df)
             except ValueError as e:
                 logger.error(f"Error preparing data: {str(e)}")
-                return Response(json.dumps({"error": "Error preparing data", "details": str(e)}),
-                                status=500,
-                                mimetype='application/json')
+                return jsonify({"error": "Error preparing data", "details": str(e)}), 500
 
             sequence_length = 60
             X, y = create_sequences(scaled_data, sequence_length)
@@ -209,9 +205,9 @@ def get_inference(token):
             predictions_20min = make_predictions(model, last_sequence, scaler, 20, X.shape)
             predictions_24h = make_predictions(model, last_sequence, scaler, 24*60, X.shape)
 
-            predicted_price_10min = round(float(predictions_10min[-1][0]), 2)
-            predicted_price_20min = round(float(predictions_20min[-1][0]), 2)
-            predicted_price_24h = round(float(predictions_24h[-1][0]), 2)
+            predicted_price_10min = float(round(predictions_10min[-1][0], 2))
+            predicted_price_20min = float(round(predictions_20min[-1][0], 2))
+            predicted_price_24h = float(round(predictions_24h[-1][0], 2))
 
             # Sanity check for all predictions
             predicted_price_10min = sanity_check_prediction(predicted_price_10min, current_price)
@@ -230,18 +226,14 @@ def get_inference(token):
                 "prediction_24h": predicted_price_24h
             }
 
-            return Response(json.dumps(result), status=200, mimetype='application/json')
+            return jsonify(result), 200
         else:
             logger.error(f"Failed to retrieve data from Binance API. Status code: {response.status_code}")
-            return Response(json.dumps({"error": "Failed to retrieve data from Binance API", "details": response.text}),
-                            status=response.status_code,
-                            mimetype='application/json')
+            return jsonify({"error": "Failed to retrieve data from Binance API", "details": response.text}), response.status_code
     except Exception as e:
         logger.error(f"An error occurred: {str(e)}")
         logger.error(traceback.format_exc())
-        return Response(json.dumps({"error": "An internal server error occurred", "details": str(e)}),
-                        status=500,
-                        mimetype='application/json')
+        return jsonify({"error": "An internal server error occurred", "details": str(e)}), 500
 
 if __name__ == "__main__":
     app.run(host='0.0.0.0', port=8000, debug=False)
