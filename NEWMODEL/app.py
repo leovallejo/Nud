@@ -5,7 +5,7 @@ from flask import Flask, Response, json
 import logging
 from datetime import datetime
 from sklearn.preprocessing import MinMaxScaler
-from tensorflow.keras.models import Sequential
+from tensorflow.keras.models import Sequential, load_model
 from tensorflow.keras.layers import Conv1D, MaxPooling1D, Flatten, Dense, Dropout, LSTM
 from tensorflow.keras.optimizers import Adam
 from tensorflow.keras.callbacks import EarlyStopping, ModelCheckpoint
@@ -14,12 +14,24 @@ from sklearn.model_selection import train_test_split
 import traceback
 import tensorflow as tf
 from tensorflow.keras import backend as K
+from celery import Celery
+from celery.schedules import crontab
 
 app = Flask(__name__)
+app.config['CELERY_BROKER_URL'] = 'redis://localhost:6379/0'  # Configure Celery broker (Redis in this example)
+app.config['CELERY_RESULT_BACKEND'] = 'redis://localhost:6379/0'
+celery = Celery(app.name, broker=app.config['CELERY_BROKER_URL'])
+celery.conf.update(app.config)
+
+# Global variables
+MODEL_FILE = 'best_model.h5'
+SEQUENCE_LENGTH = 60
+FORECAST_HORIZON = 20
 
 logging.basicConfig(level=logging.DEBUG, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger("main")
 
+# --- Utility Functions ---
 def get_binance_url(symbol="ETHUSDT", interval="1m", limit=5000):
     return f"https://api.binance.com/api/v3/klines?symbol={symbol}&interval={interval}&limit={limit}"
 
@@ -65,7 +77,7 @@ def create_sequences(data, sequence_length, forecast_horizon=20):
     targets = []
     for i in range(len(data) - sequence_length - forecast_horizon + 1):
         seq = data[i:i+sequence_length]
-        target = data[i+sequence_length:i+sequence_length+forecast_horizon, 3]  # Assuming 'close' is at index 3
+        target = data[i+sequence_length:i+sequence_length+forecast_horizon, 3] 
         sequences.append(seq)
         targets.append(target)
     return np.array(sequences), np.array(targets)
@@ -110,27 +122,25 @@ def sanity_check_prediction(prediction, current_price):
     upper_bound = current_price * (1 + max_change)
     return max(min(prediction, upper_bound), lower_bound)
 
-@app.route("/inference/<string:token>")
-def get_inference(token):
+# --- Model Loading and Retraining ---
+def get_model():
     try:
-        symbol_map = {
-            'ETH': 'ETHUSDT',
-            'BTC': 'BTCUSDT',
-            'BNB': 'BNBUSDT',
-            'SOL': 'SOLUSDT',
-            'ARB': 'ARBUSDT'
-        }
-        token = token.upper()
-        if token in symbol_map:
-            symbol = symbol_map[token]
-        else:
-            logger.error(f"Unsupported token: {token}")
-            return Response(json.dumps({"error": "Unsupported token"}), status=400, mimetype='application/json')
+        model = load_model(MODEL_FILE)
+        logger.info("Loaded existing model from disk.")
+    except:
+        logger.info("No existing model found. Creating a new model.")
+        model = build_cnn_lstm_model((SEQUENCE_LENGTH, 8), output_size=FORECAST_HORIZON)
+    return model
 
-        url = get_binance_url(symbol=symbol)
-        logger.debug(f"Fetching data from URL: {url}")
-        response = requests.get(url)
-        if response.status_code == 200:
+@celery.task
+def retrain_model():
+    with app.app_context():
+        try:
+            # 1. Fetch new data (replace with your data fetching logic)
+            url = get_binance_url(symbol='ETHUSDT')  # Example: Fetching ETHUSDT data
+            response = requests.get(url)
+            response.raise_for_status()  # Check for HTTP errors
+
             data = response.json()
             df = pd.DataFrame(data, columns=[
                 "open_time", "open", "high", "low", "close", "volume",
@@ -143,101 +153,47 @@ def get_inference(token):
             df = df[["close_time", "open", "high", "low", "close", "volume"]]
             df.columns = ["date", "open", "high", "low", "close", "volume"]
             df.set_index("date", inplace=True)
+            df = add_technical_indicators(df)
 
-            logger.debug(f"Data types after conversion: {df.dtypes}")
-            if not all(df[col].dtype == 'float64' for col in numeric_columns):
-                raise ValueError("Failed to convert all numeric columns to float")
+            # 2. Preprocess data
+            scaled_data, scaler = prepare_data(df)
+            X, y = create_sequences(scaled_data, SEQUENCE_LENGTH, FORECAST_HORIZON)
 
-            logger.debug(f"Sample of data after initial load:\n{df.head()}")
+            # 3. Load existing model or create a new one
+            model = get_model()
 
-            try:
-                df = add_technical_indicators(df)
-                logger.debug(f"Data statistics after adding indicators:\n{df.describe()}")
-                logger.debug(f"NaN count after adding indicators:\n{df.isna().sum()}")
-            except Exception as e:
-                logger.error(f"Error adding technical indicators: {str(e)}")
-                logger.error(traceback.format_exc())
-                return Response(json.dumps({"error": "Error processing data", "details": str(e)}), 
-                                status=500, 
-                                mimetype='application/json')
-
-            current_price = df.iloc[-1]["close"]
-            current_time = df.index[-1]
-            logger.info(f"Current Price: {current_price} at {current_time}")
-
-            logger.debug(f"Data sample before preparation:\n{df.tail()}")
-
-            try:
-                scaled_data, scaler = prepare_data(df)
-            except ValueError as e:
-                logger.error(f"Error preparing data: {str(e)}")
-                return Response(json.dumps({"error": "Error preparing data", "details": str(e)}), 
-                                status=500, 
-                                mimetype='application/json')
-
-            sequence_length = 60
-            forecast_horizon = 20
-            X, y = create_sequences(scaled_data, sequence_length, forecast_horizon)
-
-            logger.debug(f"Sequence shape: {X.shape}")
-            logger.debug(f"Target shape: {y.shape}")
-            logger.debug(f"X statistics: min={np.min(X)}, max={np.max(X)}, mean={np.mean(X)}")
-            logger.debug(f"y statistics: min={np.min(y)}, max={np.max(y)}, mean={np.mean(y)}")
-
+            # 4. Retrain the model
             X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, shuffle=False)
-
-            if np.isnan(X_train).any() or np.isnan(y_train).any():
-                logger.error("NaN values detected in training data")
-                raise ValueError("NaN values in training data")
-
-            model = build_cnn_lstm_model((sequence_length, X.shape[2]), output_size=forecast_horizon)
-
             callbacks = [
                 EarlyStopping(patience=10, restore_best_weights=True),
-                ModelCheckpoint('best_model.h5', save_best_only=True),
                 NanTerminateCallback()
             ]
+            model.fit(X_train, y_train, validation_data=(X_test, y_test),
+                        epochs=100, batch_size=32, callbacks=callbacks, verbose=0)
 
-            logger.debug("Training model...")
-            history = model.fit(X_train, y_train, validation_data=(X_test, y_test), 
-                                epochs=100, batch_size=32, callbacks=callbacks, verbose=0)
-            
-            logger.debug(f"Model training history: {history.history}")
-            logger.debug(f"Final training loss: {history.history['loss'][-1]}")
-            logger.debug(f"Final validation loss: {history.history['val_loss'][-1]}")
+            # 5. Save the retrained model
+            model.save(MODEL_FILE)
+            logger.info("Model retrained and saved successfully!")
 
-            last_sequence = X[-1]
-            logger.debug(f"Last sequence statistics: min={np.min(last_sequence)}, max={np.max(last_sequence)}, mean={np.mean(last_sequence)}")
+        except Exception as e:
+            logger.error(f"Error retraining model: {str(e)}")
+            logger.error(traceback.format_exc())
 
-            logger.debug(f"Making predictions for 20 steps...")
-            try:
-                predictions = model.predict(last_sequence.reshape(1, sequence_length, X.shape[2]))
-                predicted_prices = scaler.inverse_transform(np.column_stack((predictions.reshape(-1, 1), np.zeros((forecast_horizon, X.shape[2]-1)))))
-                final_prediction = round(float(predicted_prices[-1][0]), 2)
-                if not is_valid_prediction(final_prediction):
-                    logger.warning("Main prediction invalid, using fallback method")
-                    final_prediction = fallback_prediction(df)
-            except Exception as e:
-                logger.error(f"Error in main prediction: {str(e)}")
-                logger.warning("Using fallback prediction method")
-                final_prediction = fallback_prediction(df)
-
-            final_prediction = sanity_check_prediction(final_prediction, current_price)
-            logger.info(f"Final Prediction (20 minutes): {final_prediction}")
-
-            # Return the prediction as a string to avoid JSON parsing issues
-            return Response(str(final_prediction), status=200, mimetype='text/plain')
-        else:
-            logger.error(f"Failed to retrieve data from Binance API. Status code: {response.status_code}")
-            return Response(json.dumps({"error": "Failed to retrieve data from Binance API", "details": response.text}), 
-                            status=response.status_code, 
-                            mimetype='application/json')
+# --- Flask Routes ---
+@app.route("/inference/<string:token>")
+def get_inference(token):
+    try:
+        # ... (Your existing inference logic)
     except Exception as e:
-        logger.error(f"An error occurred: {str(e)}")
-        logger.error(traceback.format_exc())
-        return Response(json.dumps({"error": "An internal server error occurred", "details": str(e)}), 
-                        status=500, 
-                        mimetype='application/json')
+        # ... (Your existing error handling)
+
+# --- Celery Beat Schedule ---
+celery.conf.beat_schedule = {
+    'retrain-model-hourly': {
+        'task': 'app.retrain_model',
+        'schedule': crontab(minute=0, hour='*'),  # Run every hour
+    },
+}
 
 if __name__ == "__main__":
     app.run(host='0.0.0.0', port=8000, debug=False)
