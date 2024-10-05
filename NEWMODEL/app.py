@@ -18,20 +18,24 @@ from celery import Celery
 from celery.schedules import crontab
 
 app = Flask(__name__)
-app.config['CELERY_BROKER_URL'] = 'redis://localhost:6379/0'  # Configure Celery broker (Redis in this example)
+app.config['CELERY_BROKER_URL'] = 'redis://localhost:6379/0' 
 app.config['CELERY_RESULT_BACKEND'] = 'redis://localhost:6379/0'
 celery = Celery(app.name, broker=app.config['CELERY_BROKER_URL'])
 celery.conf.update(app.config)
 
-# Global variables
+logging.basicConfig(level=logging.DEBUG, format='%(asctime)s - %(levelname)s - %(message)s')
+logger = logging.getLogger("main")
+
 MODEL_FILE = 'best_model.h5'
 SEQUENCE_LENGTH = 60
 FORECAST_HORIZON = 20
 
-logging.basicConfig(level=logging.DEBUG, format='%(asctime)s - %(levelname)s - %(message)s')
-logger = logging.getLogger("main")
+# Global variables for data buffering
+last_trained_timestamp = None
+new_data_buffer = []
 
-# --- Utility Functions ---
+# --- All Functions ---
+
 def get_binance_url(symbol="ETHUSDT", interval="1m", limit=5000):
     return f"https://api.binance.com/api/v3/klines?symbol={symbol}&interval={interval}&limit={limit}"
 
@@ -77,7 +81,7 @@ def create_sequences(data, sequence_length, forecast_horizon=20):
     targets = []
     for i in range(len(data) - sequence_length - forecast_horizon + 1):
         seq = data[i:i+sequence_length]
-        target = data[i+sequence_length:i+sequence_length+forecast_horizon, 3] 
+        target = data[i+sequence_length:i+sequence_length+forecast_horizon, 3]  # Assuming 'close' is at index 3
         sequences.append(seq)
         targets.append(target)
     return np.array(sequences), np.array(targets)
@@ -122,7 +126,7 @@ def sanity_check_prediction(prediction, current_price):
     upper_bound = current_price * (1 + max_change)
     return max(min(prediction, upper_bound), lower_bound)
 
-# --- Model Loading and Retraining ---
+# Function to load or create a new model
 def get_model():
     try:
         model = load_model(MODEL_FILE)
@@ -132,66 +136,137 @@ def get_model():
         model = build_cnn_lstm_model((SEQUENCE_LENGTH, 8), output_size=FORECAST_HORIZON)
     return model
 
+# Celery task for model retraining
 @celery.task
 def retrain_model():
+    global last_trained_timestamp, new_data_buffer
     with app.app_context():
         try:
-            # 1. Fetch new data (replace with your data fetching logic)
-            url = get_binance_url(symbol='ETHUSDT')  # Example: Fetching ETHUSDT data
-            response = requests.get(url)
-            response.raise_for_status()  # Check for HTTP errors
-
-            data = response.json()
-            df = pd.DataFrame(data, columns=[
-                "open_time", "open", "high", "low", "close", "volume",
-                "close_time", "quote_asset_volume", "number_of_trades",
-                "taker_buy_base_asset_volume", "taker_buy_quote_asset_volume", "ignore"
-            ])
-            numeric_columns = ["open", "high", "low", "close", "volume"]
-            df[numeric_columns] = df[numeric_columns].astype(float)
-            df["close_time"] = pd.to_datetime(df["close_time"], unit='ms')
-            df = df[["close_time", "open", "high", "low", "close", "volume"]]
-            df.columns = ["date", "open", "high", "low", "close", "volume"]
-            df.set_index("date", inplace=True)
-            df = add_technical_indicators(df)
+            # 1. Fetch new data (combine buffer and recent data)
+            df = get_updated_data(symbol='ETHUSDT') 
 
             # 2. Preprocess data
+            df = add_technical_indicators(df)
             scaled_data, scaler = prepare_data(df)
-            X, y = create_sequences(scaled_data, SEQUENCE_LENGTH, FORECAST_HORIZON)
 
             # 3. Load existing model or create a new one
             model = get_model()
 
-            # 4. Retrain the model
+            # 4. Retrain the model 
+            X, y = create_sequences(scaled_data, SEQUENCE_LENGTH, FORECAST_HORIZON)
             X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, shuffle=False)
             callbacks = [
                 EarlyStopping(patience=10, restore_best_weights=True),
+                ModelCheckpoint(MODEL_FILE, save_best_only=True),
                 NanTerminateCallback()
             ]
             model.fit(X_train, y_train, validation_data=(X_test, y_test),
-                        epochs=100, batch_size=32, callbacks=callbacks, verbose=0)
+                        epochs=50, batch_size=32, callbacks=callbacks, verbose=0)
 
             # 5. Save the retrained model
             model.save(MODEL_FILE)
             logger.info("Model retrained and saved successfully!")
 
+            # Update last trained timestamp and clear buffer
+            last_trained_timestamp = datetime.utcnow()
+            new_data_buffer = []
+
         except Exception as e:
             logger.error(f"Error retraining model: {str(e)}")
             logger.error(traceback.format_exc())
 
-# --- Flask Routes ---
+# Function to fetch updated data 
+def get_updated_data(symbol="ETHUSDT"):
+    global last_trained_timestamp, new_data_buffer
+    
+    # 1. Fetch data from Binance
+    url = get_binance_url(symbol=symbol, limit=1000) 
+    response = requests.get(url)
+    data = response.json()
+    df = pd.DataFrame(data, columns=[
+        "open_time", "open", "high", "low", "close", "volume",
+        "close_time", "quote_asset_volume", "number_of_trades",
+        "taker_buy_base_asset_volume", "taker_buy_quote_asset_volume", "ignore"
+    ])
+    
+    # 2. Data Processing
+    numeric_columns = ["open", "high", "low", "close", "volume"]
+    df[numeric_columns] = df[numeric_columns].astype(float)
+    df["close_time"] = pd.to_datetime(df["close_time"], unit='ms')
+    df = df[["close_time", "open", "high", "low", "close", "volume"]]
+    df.columns = ["date", "open", "high", "low", "close", "volume"]
+    df.set_index("date", inplace=True)
+
+    # 3. Filter for new data (if last_trained_timestamp is available)
+    if last_trained_timestamp:
+        df = df[df.index > last_trained_timestamp]
+    
+    # 4. Combine new data from the buffer
+    if new_data_buffer:
+        df = pd.concat([df, pd.DataFrame(new_data_buffer)], ignore_index=True)
+
+    return df
+
+# --- Routes and Functions ---
+
 @app.route("/inference/<string:token>")
 def get_inference(token):
     try:
-        # ... (Your existing inference logic)
-    except Exception as e:
-        # ... (Your existing error handling)
+        symbol_map = {
+            'ETH': 'ETHUSDT',
+            'BTC': 'BTCUSDT',
+            'BNB': 'BNBUSDT',
+            'SOL': 'SOLUSDT',
+            'ARB': 'ARBUSDT'
+        }
+        token = token.upper()
+        if token in symbol_map:
+            symbol = symbol_map[token]
+        else:
+            logger.error(f"Unsupported token: {token}")
+            return Response(json.dumps({"error": "Unsupported token"}), status=400, mimetype='application/json')
 
-# --- Celery Beat Schedule ---
+        # Fetch data
+        df = get_updated_data(symbol=symbol)
+
+        # ... (Rest of your prediction logic using the fetched data)
+        # --- Prediction Logic ---
+
+        # 1. Prepare data for prediction
+        scaled_data, scaler = prepare_data(df)  # Use the same scaler from training
+        last_sequence = scaled_data[-SEQUENCE_LENGTH:]  # Get the last sequence
+        last_sequence = last_sequence.reshape(1, SEQUENCE_LENGTH, 8)  # Reshape for the model
+
+        # 2. Load the trained model
+        model = get_model()
+
+        # 3. Make predictions
+        predictions = model.predict(last_sequence)
+        predicted_prices = scaler.inverse_transform(np.column_stack((predictions.reshape(-1, 1), np.zeros((FORECAST_HORIZON, 7)))))
+        final_prediction = round(float(predicted_prices[-1][0]), 2) 
+
+        # 4. Apply sanity checks (optional but recommended)
+        current_price = df['close'].iloc[-1]
+        final_prediction = sanity_check_prediction(final_prediction, current_price)
+
+        # --- End of Prediction Logic ---
+
+        # Example: Returning the last closing price as a placeholder
+        current_price = df['close'].iloc[-1]
+        return Response(str(current_price), status=200, mimetype='text/plain')
+
+    except Exception as e:
+        logger.error(f"An error occurred: {str(e)}")
+        logger.error(traceback.format_exc())
+        return Response(json.dumps({"error": "An internal server error occurred", "details": str(e)}), 
+                        status=500, 
+                        mimetype='application/json')
+
+# Schedule periodic retraining (e.g., every hour)
 celery.conf.beat_schedule = {
     'retrain-model-hourly': {
         'task': 'app.retrain_model',
-        'schedule': crontab(minute=0, hour='*'),  # Run every hour
+        'schedule': crontab(minute=0, hour='*'), 
     },
 }
 
