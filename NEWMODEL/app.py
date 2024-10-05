@@ -1,3 +1,4 @@
+import os
 import pandas as pd
 import numpy as np
 import requests
@@ -16,23 +17,39 @@ import tensorflow as tf
 from tensorflow.keras import backend as K
 from celery import Celery
 from celery.schedules import crontab
+import threading
 
 app = Flask(__name__)
+
+# Configuration
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+MODEL_DIR = os.path.join(BASE_DIR, 'models')
+os.makedirs(MODEL_DIR, exist_ok=True)  # Ensure the models directory exists
+MODEL_FILE = os.path.join(MODEL_DIR, 'best_model.h5')
+
 app.config['CELERY_BROKER_URL'] = 'redis://localhost:6379/0' 
 app.config['CELERY_RESULT_BACKEND'] = 'redis://localhost:6379/0'
+
 celery = Celery(app.name, broker=app.config['CELERY_BROKER_URL'])
 celery.conf.update(app.config)
 
+# Logging Configuration
 logging.basicConfig(level=logging.DEBUG, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger("main")
 
-MODEL_FILE = 'best_model.h5'
+# Model Parameters
 SEQUENCE_LENGTH = 60
 FORECAST_HORIZON = 20
 
 # Global variables for data buffering
 last_trained_timestamp = None
 new_data_buffer = []
+
+# Thread lock for model operations
+model_lock = threading.Lock()
+
+# Global variable to store the loaded model
+model = None
 
 # --- All Functions ---
 
@@ -81,7 +98,7 @@ def create_sequences(data, sequence_length, forecast_horizon=20):
     targets = []
     for i in range(len(data) - sequence_length - forecast_horizon + 1):
         seq = data[i:i+sequence_length]
-        target = data[i+sequence_length:i+sequence_length+forecast_horizon, 3]  # Assuming 'close' is at index 3
+        target = data[i+sequence_length:i+sequence_length+forecast_horizon, 3]  # 'close' is at index 3
         sequences.append(seq)
         targets.append(target)
     return np.array(sequences), np.array(targets)
@@ -126,20 +143,30 @@ def sanity_check_prediction(prediction, current_price):
     upper_bound = current_price * (1 + max_change)
     return max(min(prediction, upper_bound), lower_bound)
 
-# Function to load or create a new model
-def get_model():
-    try:
-        model = load_model(MODEL_FILE)
-        logger.info("Loaded existing model from disk.")
-    except:
-        logger.info("No existing model found. Creating a new model.")
-        model = build_cnn_lstm_model((SEQUENCE_LENGTH, 8), output_size=FORECAST_HORIZON)
+def load_trained_model():
+    global model
+    with model_lock:
+        if model is None:
+            try:
+                model = load_model(MODEL_FILE)
+                logger.info(f"Loaded existing model from {MODEL_FILE}.")
+            except Exception as e:
+                logger.warning(f"Failed to load model from {MODEL_FILE}: {e}")
+                logger.info("Creating a new model.")
+                model = build_cnn_lstm_model((SEQUENCE_LENGTH, 8), output_size=FORECAST_HORIZON)
+                model.save(MODEL_FILE)
+                logger.info(f"New model created and saved to {MODEL_FILE}.")
+
+def get_model_instance():
+    global model
+    if model is None:
+        load_trained_model()
     return model
 
 # Celery task for model retraining
 @celery.task
 def retrain_model():
-    global last_trained_timestamp, new_data_buffer
+    global last_trained_timestamp, new_data_buffer, model
     with app.app_context():
         try:
             # 1. Fetch new data (combine buffer and recent data)
@@ -150,7 +177,7 @@ def retrain_model():
             scaled_data, scaler = prepare_data(df)
 
             # 3. Load existing model or create a new one
-            model = get_model()
+            model = get_model_instance()
 
             # 4. Retrain the model 
             X, y = create_sequences(scaled_data, SEQUENCE_LENGTH, FORECAST_HORIZON)
@@ -165,7 +192,10 @@ def retrain_model():
 
             # 5. Save the retrained model
             model.save(MODEL_FILE)
-            logger.info("Model retrained and saved successfully!")
+            logger.info(f"Model retrained and saved to {MODEL_FILE} successfully!")
+
+            # Reload the model into the global variable
+            load_trained_model()
 
             # Update last trained timestamp and clear buffer
             last_trained_timestamp = datetime.utcnow()
@@ -203,8 +233,10 @@ def get_updated_data(symbol="ETHUSDT"):
     
     # 4. Combine new data from the buffer
     if new_data_buffer:
-        df = pd.concat([df, pd.DataFrame(new_data_buffer)], ignore_index=True)
-
+        buffered_df = pd.DataFrame(new_data_buffer)
+        buffered_df.set_index("date", inplace=True)
+        df = pd.concat([df, buffered_df], ignore_index=False)
+    
     return df
 
 # --- Routes and Functions ---
@@ -229,25 +261,41 @@ def get_inference(token):
         # Fetch data
         df = get_updated_data(symbol=symbol)
 
+        if df.empty:
+            logger.warning(f"No new data available for symbol: {symbol}")
+            return Response(json.dumps({"error": "No new data available"}), status=400, mimetype='application/json')
+
         # --- Prediction Logic ---
 
-        # 1. Add Technical Indicators HERE
+        # 1. Add Technical Indicators
         df = add_technical_indicators(df) 
 
         # 2. Prepare data for prediction
         scaled_data, scaler = prepare_data(df)  
+        
+        if len(scaled_data) < SEQUENCE_LENGTH:
+            logger.warning("Not enough data to create a sequence for prediction.")
+            return Response(json.dumps({"error": "Not enough data for prediction"}), status=400, mimetype='application/json')
+        
         last_sequence = scaled_data[-SEQUENCE_LENGTH:]  
         last_sequence = last_sequence.reshape(1, SEQUENCE_LENGTH, 8) 
 
-        # 3. Load the trained model
-        model = get_model()
+        # 3. Use the pre-loaded model for prediction
+        with model_lock:
+            if model is None:
+                load_trained_model()
+            predictions = model.predict(last_sequence)
+        
+        # 4. Inverse transform the predictions
+        # Since only 'close' is predicted, we need to inverse transform accordingly
+        # Create a placeholder array with zeros for other features
+        placeholder = np.zeros((FORECAST_HORIZON, 7))
+        predictions_extended = np.hstack((predictions, placeholder))
+        predicted_prices = scaler.inverse_transform(predictions_extended)[:, 0]  # 'close' is the first column
 
-        # 3. Make predictions
-        predictions = model.predict(last_sequence)
-        predicted_prices = scaler.inverse_transform(np.column_stack((predictions.reshape(-1, 1), np.zeros((FORECAST_HORIZON, 7)))))
-        final_prediction = round(float(predicted_prices[-1][0]), 2) 
+        final_prediction = round(float(predicted_prices[-1]), 2) 
 
-        # 4. Apply sanity checks (optional but recommended)
+        # 5. Apply sanity checks
         current_price = df['close'].iloc[-1]
         final_prediction = sanity_check_prediction(final_prediction, current_price)
 
@@ -256,7 +304,7 @@ def get_inference(token):
         return Response(str(final_prediction), status=200, mimetype='text/plain')
 
     except Exception as e:
-        logger.error(f"An error occurred: {str(e)}")
+        logger.error(f"An error occurred during inference: {str(e)}")
         logger.error(traceback.format_exc())
         return Response(json.dumps({"error": "An internal server error occurred", "details": str(e)}), 
                         status=500, 
@@ -269,6 +317,9 @@ celery.conf.beat_schedule = {
         'schedule': crontab(minute=0, hour='*'), 
     },
 }
+
+# Load the model at startup
+load_trained_model()
 
 if __name__ == "__main__":
     app.run(host='0.0.0.0', port=8000, debug=False)
