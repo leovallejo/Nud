@@ -229,15 +229,17 @@ def get_inference(token):
         # Fetch data
         df = get_updated_data(symbol=symbol)
 
-        # ... (Rest of your prediction logic using the fetched data)
         # --- Prediction Logic ---
 
-        # 1. Prepare data for prediction
-        scaled_data, scaler = prepare_data(df)  # Use the same scaler from training
-        last_sequence = scaled_data[-SEQUENCE_LENGTH:]  # Get the last sequence
-        last_sequence = last_sequence.reshape(1, SEQUENCE_LENGTH, 8)  # Reshape for the model
+        # 1. Add Technical Indicators HERE
+        df = add_technical_indicators(df) 
 
-        # 2. Load the trained model
+        # 2. Prepare data for prediction
+        scaled_data, scaler = prepare_data(df)  
+        last_sequence = scaled_data[-SEQUENCE_LENGTH:]  
+        last_sequence = last_sequence.reshape(1, SEQUENCE_LENGTH, 8) 
+
+        # 3. Load the trained model
         model = get_model()
 
         # 3. Make predictions
@@ -251,9 +253,7 @@ def get_inference(token):
 
         # --- End of Prediction Logic ---
 
-        # Example: Returning the last closing price as a placeholder
-        current_price = df['close'].iloc[-1]
-        return Response(str(current_price), status=200, mimetype='text/plain')
+        return Response(str(final_prediction), status=200, mimetype='text/plain')
 
     except Exception as e:
         logger.error(f"An error occurred: {str(e)}")
