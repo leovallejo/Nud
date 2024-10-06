@@ -1,40 +1,46 @@
 import os
-import pandas as pd
-import numpy as np
-import requests
-from flask import Flask, Response, json
-import logging
-from datetime import datetime
-from sklearn.preprocessing import MinMaxScaler
-from tensorflow.keras.models import Sequential, load_model
-from tensorflow.keras.layers import Conv1D, MaxPooling1D, Flatten, Dense, Dropout, LSTM
-from tensorflow.keras.optimizers import Adam
-from tensorflow.keras.callbacks import EarlyStopping, ModelCheckpoint
-from tensorflow.keras.regularizers import l2
-from sklearn.model_selection import train_test_split
+import threading
 import traceback
+from datetime import datetime
+
+import numpy as np
+import pandas as pd
+import requests
 import tensorflow as tf
-from tensorflow.keras import backend as K
 from celery import Celery
 from celery.schedules import crontab
-import threading
+from flask import Flask, Response, json
+from flask_limiter import Limiter
+from flask_limiter.util import get_remote_address
+from flask_healthz import healthz
+from sklearn.model_selection import train_test_split
+from sklearn.preprocessing import MinMaxScaler
+from tensorflow.keras import backend as K
+from tensorflow.keras.callbacks import EarlyStopping, ModelCheckpoint
+from tensorflow.keras.layers import Conv1D, Dense, Dropout, Flatten, LSTM, MaxPooling1D
+from tensorflow.keras.models import Sequential, load_model
+from tensorflow.keras.optimizers import Adam
+from tensorflow.keras.regularizers import l2
+import logging
 
+# Initialize Flask app
 app = Flask(__name__)
 
-# Configuration
+# Configuration for Celery and Model Paths
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 MODEL_DIR = os.path.join(BASE_DIR, 'models')
 os.makedirs(MODEL_DIR, exist_ok=True)  # Ensure the models directory exists
 MODEL_FILE = os.path.join(MODEL_DIR, 'best_model.h5')
 
-app.config['CELERY_BROKER_URL'] = 'redis://localhost:6379/0' 
-app.config['CELERY_RESULT_BACKEND'] = 'redis://localhost:6379/0'
+app.config['CELERY_BROKER_URL'] = 'redis://redis:6379/0' 
+app.config['CELERY_RESULT_BACKEND'] = 'redis://redis:6379/0'
 
+# Initialize Celery
 celery = Celery(app.name, broker=app.config['CELERY_BROKER_URL'])
 celery.conf.update(app.config)
 
 # Logging Configuration
-logging.basicConfig(level=logging.DEBUG, format='%(asctime)s - %(levelname)s - %(message)s')
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger("main")
 
 # Model Parameters
@@ -50,6 +56,16 @@ model_lock = threading.Lock()
 
 # Global variable to store the loaded model
 model = None
+
+# Initialize Rate Limiter
+limiter = Limiter(
+    app,
+    key_func=get_remote_address,
+    default_limits=["100 per hour"]
+)
+
+# Initialize Health Check
+app.register_blueprint(healthz, url_prefix="/health")
 
 # --- All Functions ---
 
@@ -138,7 +154,7 @@ def fallback_prediction(df):
     return round(df['close'].tail(20).mean(), 2)
 
 def sanity_check_prediction(prediction, current_price):
-    max_change = 0.1
+    max_change = 0.1  # 10% change
     lower_bound = current_price * (1 - max_change)
     upper_bound = current_price * (1 + max_change)
     return max(min(prediction, upper_bound), lower_bound)
@@ -163,49 +179,6 @@ def get_model_instance():
         load_trained_model()
     return model
 
-# Celery task for model retraining
-@celery.task
-def retrain_model():
-    global last_trained_timestamp, new_data_buffer, model
-    with app.app_context():
-        try:
-            # 1. Fetch new data (combine buffer and recent data)
-            df = get_updated_data(symbol='ETHUSDT') 
-
-            # 2. Preprocess data
-            df = add_technical_indicators(df)
-            scaled_data, scaler = prepare_data(df)
-
-            # 3. Load existing model or create a new one
-            model = get_model_instance()
-
-            # 4. Retrain the model 
-            X, y = create_sequences(scaled_data, SEQUENCE_LENGTH, FORECAST_HORIZON)
-            X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, shuffle=False)
-            callbacks = [
-                EarlyStopping(patience=10, restore_best_weights=True),
-                ModelCheckpoint(MODEL_FILE, save_best_only=True),
-                NanTerminateCallback()
-            ]
-            model.fit(X_train, y_train, validation_data=(X_test, y_test),
-                        epochs=50, batch_size=32, callbacks=callbacks, verbose=0)
-
-            # 5. Save the retrained model
-            model.save(MODEL_FILE)
-            logger.info(f"Model retrained and saved to {MODEL_FILE} successfully!")
-
-            # Reload the model into the global variable
-            load_trained_model()
-
-            # Update last trained timestamp and clear buffer
-            last_trained_timestamp = datetime.utcnow()
-            new_data_buffer = []
-
-        except Exception as e:
-            logger.error(f"Error retraining model: {str(e)}")
-            logger.error(traceback.format_exc())
-
-# Function to fetch updated data 
 def get_updated_data(symbol="ETHUSDT"):
     global last_trained_timestamp, new_data_buffer
     
@@ -239,11 +212,72 @@ def get_updated_data(symbol="ETHUSDT"):
     
     return df
 
+# Celery task for model retraining
+@celery.task
+def retrain_model():
+    global last_trained_timestamp, new_data_buffer, model
+    with app.app_context():
+        try:
+            logger.info("Starting model retraining task.")
+            # 1. Fetch new data (symbol can be parameterized if needed)
+            df = get_updated_data(symbol='ETHUSDT') 
+
+            if df.empty:
+                logger.warning("No new data available for retraining.")
+                return
+
+            # 2. Preprocess data
+            df = add_technical_indicators(df)
+            scaled_data, scaler = prepare_data(df)
+
+            # 3. Load existing model or create a new one
+            model = get_model_instance()
+
+            # 4. Retrain the model 
+            X, y = create_sequences(scaled_data, SEQUENCE_LENGTH, FORECAST_HORIZON)
+            X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, shuffle=False)
+            callbacks = [
+                EarlyStopping(patience=10, restore_best_weights=True),
+                ModelCheckpoint(MODEL_FILE, save_best_only=True),
+                NanTerminateCallback()
+            ]
+            logger.info("Starting model training.")
+            model.fit(
+                X_train, y_train,
+                validation_data=(X_test, y_test),
+                epochs=50,
+                batch_size=32,
+                callbacks=callbacks,
+                verbose=0
+            )
+
+            # 5. Save the retrained model
+            model.save(MODEL_FILE)
+            logger.info(f"Model retrained and saved to {MODEL_FILE} successfully!")
+
+            # Reload the model into the global variable
+            load_trained_model()
+
+            # Update last trained timestamp and clear buffer
+            last_trained_timestamp = datetime.utcnow()
+            new_data_buffer = []
+            logger.info("Model retraining task completed successfully.")
+
+        except Exception as e:
+            logger.error(f"Error retraining model: {str(e)}")
+            logger.error(traceback.format_exc())
+
 # --- Routes and Functions ---
 
+@app.route("/health", methods=["GET"])
+def health():
+    return healthz()
+
 @app.route("/inference/<string:token>")
+@limiter.limit("100 per hour")
 def get_inference(token):
     try:
+        # Input Validation
         symbol_map = {
             'ETH': 'ETHUSDT',
             'BTC': 'BTCUSDT',
@@ -252,11 +286,11 @@ def get_inference(token):
             'ARB': 'ARBUSDT'
         }
         token = token.upper()
-        if token in symbol_map:
-            symbol = symbol_map[token]
-        else:
+        if token not in symbol_map:
             logger.error(f"Unsupported token: {token}")
             return Response(json.dumps({"error": "Unsupported token"}), status=400, mimetype='application/json')
+
+        symbol = symbol_map[token]
 
         # Fetch data
         df = get_updated_data(symbol=symbol)
@@ -285,15 +319,16 @@ def get_inference(token):
             if model is None:
                 load_trained_model()
             predictions = model.predict(last_sequence)
-        
-        # 4. Inverse transform the predictions
-        # Since only 'close' is predicted, we need to inverse transform accordingly
-        # Create a placeholder array with zeros for other features
-        placeholder = np.zeros((FORECAST_HORIZON, 7))
-        predictions_extended = np.hstack((predictions, placeholder))
-        predicted_prices = scaler.inverse_transform(predictions_extended)[:, 0]  # 'close' is the first column
 
-        final_prediction = round(float(predicted_prices[-1]), 2) 
+        # 4. Inverse transform the predictions
+        # Reshape predictions from (1, 20) to (20, 1)
+        predictions_reshaped = predictions.reshape(-1, 1)  # Shape: (20, 1)
+        placeholder = np.zeros((FORECAST_HORIZON, 7))  # Shape: (20, 7)
+        predictions_extended = np.hstack((predictions_reshaped, placeholder))  # Shape: (20, 8)
+
+        # Inverse transform
+        predicted_prices_scaled = scaler.inverse_transform(predictions_extended)[:, 0]  # 'close' is the first column
+        final_prediction = round(float(predicted_prices_scaled[-1]), 2) 
 
         # 5. Apply sanity checks
         current_price = df['close'].iloc[-1]
@@ -301,14 +336,17 @@ def get_inference(token):
 
         # --- End of Prediction Logic ---
 
+        logger.info(f"Prediction for {symbol}: {final_prediction}")
         return Response(str(final_prediction), status=200, mimetype='text/plain')
 
     except Exception as e:
         logger.error(f"An error occurred during inference: {str(e)}")
         logger.error(traceback.format_exc())
-        return Response(json.dumps({"error": "An internal server error occurred", "details": str(e)}), 
-                        status=500, 
-                        mimetype='application/json')
+        return Response(
+            json.dumps({"error": "An internal server error occurred", "details": str(e)}), 
+            status=500, 
+            mimetype='application/json'
+        )
 
 # Schedule periodic retraining (e.g., every hour)
 celery.conf.beat_schedule = {
