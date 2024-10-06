@@ -1,57 +1,40 @@
-version: '3.8'
+# Use an official lightweight Python runtime as a parent image
+FROM python:3.9-slim
 
-services:
-  redis:
-    image: "redis:6.2-alpine"
-    container_name: redis
-    ports:
-      - "6379:6379"
-    volumes:
-      - redis-data:/data
-    healthcheck:
-      test: ["CMD", "redis-cli", "ping"]
-      interval: 10s
-      timeout: 5s
-      retries: 5
+# Set environment variables to prevent Python from writing .pyc files and to buffer stdout/stderr
+ENV PYTHONDONTWRITEBYTECODE=1
+ENV PYTHONUNBUFFERED=1
 
-  inference:
-    container_name: inference-hf
-    build:
-      context: .
-      dockerfile: Dockerfile
-    command: gunicorn -b 0.0.0.0:8000 app:app --workers 4 --threads 2
-    ports:
-      - "8000:8000"
-    volumes:
-      - ./models:/app/models
-      - ./worker-data:/app/worker-data
-    depends_on:
-      redis:
-        condition: service_healthy
-    environment:
-      - FLASK_ENV=production
-      - RATE_LIMIT=100 per hour
-    restart: unless-stopped
+# Set the working directory in the container
+WORKDIR /app
 
-  worker:
-    container_name: celery-worker
-    build:
-      context: .
-      dockerfile: Dockerfile
-    command: celery -A app.celery worker --loglevel=info
-    volumes:
-      - ./models:/app/models
-      - ./worker-data:/app/worker-data
-    depends_on:
-      redis:
-        condition: service_healthy
-    env_file:
-      - ./worker-data/env_file
-    environment:
-      - CELERY_WORKER_CONCURRENCY=4
-    restart: unless-stopped
+# Install system dependencies required for building Python packages and TensorFlow
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    build-essential \
+    libssl-dev \
+    libffi-dev \
+    gcc \
+    && rm -rf /var/lib/apt/lists/*
 
-volumes:
-  redis-data:
-  models:
-  worker-data:
+# Copy only requirements.txt first to leverage Docker caching
+COPY requirements.txt .
+
+# Upgrade pip and install Python dependencies without caching to reduce image size
+RUN pip install --upgrade pip \
+    && pip install --no-cache-dir -r requirements.txt
+
+# Copy the rest of the application code into the container
+COPY . .
+
+# Create the models directory and ensure correct permissions
+RUN mkdir -p /app/models
+
+# Create a non-root user for running the application
+RUN adduser --disabled-password --no-create-home appuser
+USER appuser
+
+# Expose port 8000 for the Flask application
+EXPOSE 8000
+
+# Define the default command to run the Flask app using Gunicorn with multiple workers and threads
+CMD ["gunicorn", "-b", "0.0.0.0:8000", "app:app", "--workers", "4", "--threads", "2"]
