@@ -1,5 +1,5 @@
 # Use an official lightweight Python runtime as a parent image
-FROM python:3.9-slim
+FROM python:3.9-slim-buster
 
 # Set environment variables to prevent Python from writing .pyc files and to buffer stdout/stderr
 ENV PYTHONDONTWRITEBYTECODE=1
