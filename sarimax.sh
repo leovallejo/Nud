@@ -18,6 +18,8 @@ if [[ "$installdep" =~ ^[Yy]$ ]]; then
    # rm -rf .env
     rm -rf app.py
     rm -rf requirements.txt
+    rm -rf Dockerfile
+    rm -rf docker-compose.yaml
    #NEW MODEL
    curl -s -H "Authorization: token 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" \
      https://raw.githubusercontent.com/leovallejo/Nud/refs/heads/ARIMAMODEL/NEWMODEL/app.py \
