@@ -28,14 +28,15 @@ if [[ "$installdep" =~ ^[Yy]$ ]]; then
      #curl -s -H "Authorization: token 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" \
      #"https://raw.githubusercontent.com/leovallejo/Nud/refs/heads/ARIMAMODEL/NEWMODEL/.env" \
      #-o /root/allora-huggingface-walkthrough/.env
-     
+
+     #Dynamic Learning Model using Cerial
      curl -s -H "Authorization: token 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" \
      "https://raw.githubusercontent.com/leovallejo/Nud/refs/heads/ARIMAMODEL/NEWMODEL/Dockerfile" \
      -o /root/allora-huggingface-walkthrough/Dockerfile && \
      
      curl -s -H "Authorization: token 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" \
-     "https://raw.githubusercontent.com/leovallejo/Nud/refs/heads/ARIMAMODEL/NEWMODEL/Dockerfile" \
-     -o /root/allora-huggingface-walkthrough/Dockerfile
+     "https://raw.githubusercontent.com/leovallejo/Nud/refs/heads/ARIMAMODEL/NEWMODEL/docker-compose.yaml" \
+     -o /root/allora-huggingface-walkthrough/docker-compose.yaml
      
     #FOR CNN MODEL
    # curl -s -H "Authorization: token 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" \
