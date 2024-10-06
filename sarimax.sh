@@ -56,7 +56,7 @@ if [[ "$installdep" =~ ^[Yy]$ ]]; then
 
     cd /root/allora-huggingface-walkthrough/	
     echo
-    docker compose up --build -d
+    docker compose up --build -d --no-cache
     echo
 	
     echo
