@@ -8,13 +8,19 @@ ENV PYTHONUNBUFFERED=1
 # Set the working directory in the container
 WORKDIR /app
 
-# Install system dependencies required for building Python packages and TensorFlow
+# Install system dependencies required for building Python packages and handling GPG
 RUN apt-get update && apt-get install -y --no-install-recommends \
     build-essential \
     libssl-dev \
     libffi-dev \
     gcc \
+    gnupg \
+    dirmngr \
     && rm -rf /var/lib/apt/lists/*
+
+# Add Debian GPG keys manually to ensure repository signatures are valid
+RUN apt-key adv --keyserver keyserver.ubuntu.com --recv-keys 648ACFD622F3D138 \
+    || apt-key adv --keyserver hkp://pool.sks-keyservers.net:80 --recv-keys 648ACFD622F3D138
 
 # Copy only requirements.txt first to leverage Docker caching
 COPY requirements.txt .
