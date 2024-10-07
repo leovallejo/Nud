@@ -1,56 +1,35 @@
-
+version: '3.8'
 
 services:
-  redis:
-    image: "redis:6.2-alpine"
-    container_name: redis
-    ports:
-      - "6379:6379"
-    volumes:
-      - redis-data:/data
-    healthcheck:
-      test: ["CMD", "redis-cli", "ping"]
-      interval: 10s
-      timeout: 5s
-      retries: 5
-
   inference:
     container_name: inference-hf
     build:
       context: .
       dockerfile: Dockerfile
+    command: gunicorn -b 0.0.0.0:8000 app:app  # Use Gunicorn for production
     ports:
       - "8000:8000"
-    volumes:
-      - ./models:/app/models
-      - ./worker-data:/app/worker-data
-    depends_on:
-      redis:
-        condition: service_healthy
+    restart: unless-stopped  # Automatically restart unless stopped
     environment:
-      - FLASK_ENV=production
-      - RATE_LIMIT=100 per hour
-    restart: unless-stopped
+      - SOME_ENV_VAR=value  # Add any necessary environment variables here
+    volumes:
+      - ./data:/app/data  # Optional: Map a volume for persistent data
+
+  redis:
+    image: redis:alpine  # Lightweight Redis image
+    ports:
+      - "6379:6379"  # Expose Redis on port 6379
 
   worker:
-    container_name: celery-worker
+    container_name: worker
     build:
       context: .
       dockerfile: Dockerfile
-    command: celery -A app.celery worker --loglevel=info
-    volumes:
-      - ./models:/app/models
-      - ./worker-data:/app/worker-data
+    command: celery -A app.celery worker --loglevel=info  # Start Celery worker
     depends_on:
-      redis:
-        condition: service_healthy
-    env_file:
-      - ./worker-data/env_file
-    environment:
-      - CELERY_WORKER_CONCURRENCY=4
-    restart: unless-stopped
+      - redis
+    restart: unless-stopped  # Automatically restart the worker container
 
 volumes:
-  redis-data:
-  models:
+  inference-data:
   worker-data:
