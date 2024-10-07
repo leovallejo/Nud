@@ -1,61 +1,25 @@
-# Use an official lightweight Python runtime as a parent image
-FROM python:3.9-slim-bullseye
+# Use a slim base image for reduced size and improved security
+FROM python:3.9-slim
 
-# Set environment variables to prevent Python from writing .pyc files and to buffer stdout/stderr
-ENV PYTHONDONTWRITEBYTECODE=1
-ENV PYTHONUNBUFFERED=1
+# Set environment variables for Python
+ENV PYTHONDONTWRITEBYTECODE=1  # Prevent .pyc files from being created
+ENV PYTHONUNBUFFERED=1           # Ensure logs are printed in real-time
 
-# Set the working directory in the container
+# Set the working directory
 WORKDIR /app
 
-# Update APT sources to use Debian Archive repositories
-RUN sed -i 's|http://deb.debian.org/debian|http://archive.debian.org/debian|g' /etc/apt/sources.list \
-    && sed -i 's|http://deb.debian.org/debian-security|http://archive.debian.org/debian-security|g' /etc/apt/sources.list
+# Copy only requirements first to leverage Docker caching
+COPY requirements.txt /app/
 
-# Disable 'Check-Valid-Until' to allow installation from expired repositories
-RUN echo 'Acquire::Check-Valid-Until "false";' > /etc/apt/apt.conf.d/99ignore-release-date
+# Install dependencies
+RUN pip install --upgrade pip && \
+    pip install --no-cache-dir -r requirements.txt
 
-# Install system dependencies required for building Python packages and handling GPG
-RUN apt-get update && apt-get install -y --no-install-recommends \
-    build-essential \
-    libssl-dev \
-    libffi-dev \
-    gcc \
-    gnupg \
-    dirmngr \
-    && rm -rf /var/lib/apt/lists/*
+# Copy the rest of the application code
+COPY . /app/
 
-# Manually add Debian Archive GPG keys to ensure repository signatures are valid
-RUN apt-key adv --keyserver keyserver.ubuntu.com --recv-keys 648ACFD622F3D138 \
-    || apt-key adv --keyserver hkp://pool.sks-keyservers.net:80 --recv-keys 648ACFD622F3D138
-
-# Update APT sources again with the added keys
-RUN apt-get update && apt-get install -y --no-install-recommends \
-    build-essential \
-    libssl-dev \
-    libffi-dev \
-    gcc \
-    && rm -rf /var/lib/apt/lists/*
-
-# Copy only requirements.txt first to leverage Docker caching
-COPY requirements.txt .
-
-# Upgrade pip and install Python dependencies without caching to reduce image size
-RUN pip install --upgrade pip \
-    && pip install --no-cache-dir -r requirements.txt
-
-# Copy the rest of the application code into the container
-COPY . .
-
-# Create the models directory and ensure correct permissions
-RUN mkdir -p /app/models
-
-# Create a non-root user for running the application
-RUN adduser --disabled-password --no-create-home appuser
-USER appuser
-
-# Expose port 8000 for the Flask application
+# Expose port 8000 for the application
 EXPOSE 8000
 
-# Define the default command to run the Flask app using Gunicorn with multiple workers and threads
-CMD ["gunicorn", "-b", "0.0.0.0:8000", "app:app", "--workers", "4", "--threads", "2"]
+# Run the application using Gunicorn
+CMD ["gunicorn", "-b", "0.0.0.0:8000", "app:app"]
