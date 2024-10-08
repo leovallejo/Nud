@@ -1,4 +1,4 @@
-I'llimport pandas as pd
+import pandas as pd
 import numpy as np
 import requests
 from flask import Flask, Response, json
@@ -36,12 +36,6 @@ retrain_interval = 60 * 60  # Retrain every hour (in seconds)
 def get_binance_url(symbol="ETHUSDT", interval="1m", limit=5000):
     return f"https://api.binance.com/api/v3/klines?symbol={symbol}&interval={interval}&limit={limit}"
 
-# ... [rest of the functions: handle_nan_values, add_technical_indicators, 
-#       calculate_rsi, prepare_data, create_sequences, custom_loss, 
-#       build_cnn_lstm_model, NanTerminateCallback, is_valid_prediction, 
-#       fallback_prediction, sanity_check_prediction] ...
-
-
 def handle_nan_values(df):
     df = df.fillna(method='ffill')
     df = df.fillna(method='bfill')
@@ -64,19 +58,20 @@ def calculate_rsi(prices, window=14):
 def prepare_data(df):
     features = ['open', 'high', 'low', 'close', 'volume', 'MA7', 'MA14', 'RSI']
     df = handle_nan_values(df)
-    
+
     for feature in features:
         df[feature] = df[feature].astype(np.float64)
-    
+
     if df[features].isna().any().any():
         logger.error("NaN values still present after handling")
         raise ValueError("Unable to handle all NaN values")
-    
+
+    global scaler
     scaler = MinMaxScaler(feature_range=(-1, 1))
     scaled_data = scaler.fit_transform(df[features].astype(np.float64))
-    
+
     logger.debug(f"Scaled data statistics: min={np.min(scaled_data)}, max={np.max(scaled_data)}, mean={np.mean(scaled_data)}")
-    
+
     return scaled_data, scaler
 
 def create_sequences(data, sequence_length, forecast_horizon=20):
@@ -113,7 +108,7 @@ def build_cnn_lstm_model(input_shape, output_size=20):
 
 class NanTerminateCallback(tf.keras.callbacks.Callback):
     def on_epoch_end(self, epoch, logs=None):
-        if np.isnan(logs.get('loss')):
+        if logs is not None and np.isnan(logs.get('loss')):
             self.model.stop_training = True
             print("NaN loss encountered, terminating training")
 
@@ -128,9 +123,6 @@ def sanity_check_prediction(prediction, current_price):
     lower_bound = current_price * (1 - max_change)
     upper_bound = current_price * (1 + max_change)
     return max(min(prediction, upper_bound), lower_bound)
-
-
-
 
 def load_or_train_model(df):
     global model, last_train_time, scaler
@@ -160,17 +152,30 @@ def load_or_train_model(df):
         logger.info("New model trained and saved")
         last_train_time = time.time()
 
-
-
 @app.route("/inference/<string:token>")
 def get_inference(token):
     global data_df, scaler
     try:
-        # ... [rest of your code: symbol mapping, fetching data from Binance] ...
+        symbol_map = {
+            'ETH': 'ETHUSDT',
+            'BTC': 'BTCUSDT',
+            'BNB': 'BNBUSDT',
+            'SOL': 'SOLUSDT',
+            'ARB': 'ARBUSDT'
+        }
+        token = token.upper()
+        if token in symbol_map:
+            symbol = symbol_map[token]
+        else:
+            logger.error(f"Unsupported token: {token}")
+            return Response(json.dumps({"error": "Unsupported token"}), status=400, mimetype='application/json')
 
+        url = get_binance_url(symbol=symbol)
+        logger.debug(f"Fetching data from URL: {url}")
+        response = requests.get(url)
 
-
-
+        if response.status_code == 200:
+            data = response.json()
 
             # Update data_df with new data
             new_data = pd.DataFrame(data, columns=[
@@ -186,19 +191,62 @@ def get_inference(token):
             new_data.set_index("date", inplace=True)
 
             data_df = pd.concat([data_df, new_data])
-            data_df = data_df[~data_df.index.duplicated(keep='last')] # Remove potential duplicates
-            data_df = data_df.tail(5000) # Keep only the last 5000 data points
+            data_df = data_df[~data_df.index.duplicated(keep='last')] 
+            data_df = data_df.tail(5000) 
 
-            # ... [rest of your code: adding technical indicators, 
-            #       getting current price, loading or training the model] ...
+            # Add technical indicators
+            try:
+                data_df = add_technical_indicators(data_df)
+                logger.debug(f"Data statistics after adding indicators:\n{data_df.describe()}")
+                logger.debug(f"NaN count after adding indicators:\n{data_df.isna().sum()}")
+            except Exception as e:
+                logger.error(f"Error adding technical indicators: {str(e)}")
+                logger.error(traceback.format_exc())
+                return Response(json.dumps({"error": "Error processing data", "details": str(e)}), 
+                                status=500, 
+                                mimetype='application/json')
 
-            load_or_train_model(data_df.copy()) # Pass a copy to avoid modifying the original
+            current_price = data_df.iloc[-1]["close"]
+            current_time = data_df.index[-1]
+            logger.info(f"Current Price: {current_price} at {current_time}")
 
-            # ... [rest of your code: making predictions, 
-            #       handling potential errors, returning the prediction] ...
+            # Load or train the model
+            load_or_train_model(data_df.copy())
+
+            # Make predictions
+            last_sequence = scaler.transform(data_df.tail(sequence_length)[['open', 'high', 'low', 'close', 'volume', 'MA7', 'MA14', 'RSI']].values.astype(np.float64))
+            logger.debug(f"Last sequence statistics: min={np.min(last_sequence)}, max={np.max(last_sequence)}, mean={np.mean(last_sequence)}")
+
+            try:
+                predictions = model.predict(last_sequence.reshape(1, sequence_length, -1))
+                predicted_prices = scaler.inverse_transform(np.column_stack((predictions.reshape(-1, 1), np.zeros((forecast_horizon, last_sequence.shape[1]-1)))))[:, 0]
+                final_prediction = round(float(predicted_prices[-1]), 2)
+
+                if not is_valid_prediction(final_prediction):
+                    logger.warning("Main prediction invalid, using fallback method")
+                    final_prediction = fallback_prediction(data_df)
+            except Exception as e:
+                logger.error(f"Error in main prediction: {str(e)}")
+                logger.warning("Using fallback prediction method")
+                final_prediction = fallback_prediction(data_df)
+
+            final_prediction = sanity_check_prediction(final_prediction, current_price)
+            logger.info(f"Final Prediction (20 minutes): {final_prediction}")
+
+            return Response(str(final_prediction), status=200, mimetype='text/plain')
+
+        else:
+            logger.error(f"Failed to retrieve data from Binance API. Status code: {response.status_code}")
+            return Response(json.dumps({"error": "Failed to retrieve data from Binance API", "details": response.text}), 
+                            status=response.status_code, 
+                            mimetype='application/json')
 
     except Exception as e:
-        # ... [error handling] ...
+        logger.error(f"An error occurred: {str(e)}")
+        logger.error(traceback.format_exc())
+        return Response(json.dumps({"error": "An internal server error occurred", "details": str(e)}), 
+                        status=500, 
+                        mimetype='application/json')
 
 if __name__ == "__main__":
     app.run(host='0.0.0.0', port=8000, debug=False)
