@@ -31,16 +31,15 @@ cp config.example.json config.json
 cat > config.json <<EOL
 {
     "wallet": {
-        "addressKeyName": "zep",
-        "addressRestoreMnemonic": "peasant orchard outer oppose course sunny charge foam better test wasp knock
-",
+        "addressKeyName": "test",
+        "addressRestoreMnemonic": "<your mnemonic phrase>",
         "alloraHomeDir": "/root/.allorad",
         "gas": "1000000",
         "gasAdjustment": 1.0,
         "nodeRpc": "https://rpc.ankr.com/allora_testnet/",
         "maxRetries": 1,
         "delay": 1,
-        "submitTx": true
+        "submitTx": false
     },
     "worker": [
         {
@@ -70,7 +69,6 @@ cat > config.json <<EOL
                 "Token": "ARB"
             }
         }
-        
     ]
 }
 EOL
@@ -78,11 +76,10 @@ EOL
 # Prompt user for addressKeyName and addressRestoreMnemonic
 read -p "Enter your addressKeyName: " addressKeyName
 read -p "Enter your addressRestoreMnemonic: " addressRestoreMnemonic
-read -p "Enter your nodeRpc: " nodeRpc
 
 # Update the config.json with user-provided values
- jq --arg keyName "$addressKeyName" --arg mnemonic "$addressRestoreMnemonic" --arg rpc "$nodeRpc" \
- '.wallet.nodeRpc = $rpc' config.json > temp.json && mv temp.json config.json
+jq --arg keyName "$addressKeyName" --arg mnemonic "$addressRestoreMnemonic" \
+   '.wallet.addressKeyName = $keyName | .wallet.addressRestoreMnemonic = $mnemonic' config.json > temp.json && mv temp.json config.json
 
 # Export and run the initialization script
 chmod +x init.config
