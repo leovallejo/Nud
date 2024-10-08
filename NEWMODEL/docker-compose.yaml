@@ -1,34 +1,25 @@
 
-
 services:
   inference:
     container_name: inference-hf
     build:
       context: .
       dockerfile: Dockerfile
-    command: gunicorn -b 0.0.0.0:8000 app:app  # Use Gunicorn for production
+    command: python -u /app/app.py
     ports:
       - "8000:8000"
-    restart: unless-stopped  # Automatically restart unless stopped
-    environment:
-      - SOME_ENV_VAR=value  # Add any necessary environment variables here
-    volumes:
-      - ./data:/app/data  # Optional: Map a volume for persistent data
-
-  redis:
-    image: redis:alpine  # Lightweight Redis image
-    ports:
-      - "6379:6379"  # Expose Redis on port 6379
+    volumes: 
+      - inference-data:/app/data
 
   worker:
     container_name: worker
-    build:
-      context: .
-      dockerfile: Dockerfile
-    command: celery -A app.celery worker --loglevel=info  # Start Celery worker
+    image: alloranetwork/allora-offchain-node:latest
+    volumes:
+      - ./worker-data:/data
     depends_on:
-      - redis
-    restart: unless-stopped  # Automatically restart the worker container
+      - inference
+    env_file:
+      - ./worker-data/env_file
 
 volumes:
   inference-data:
