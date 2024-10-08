@@ -1,25 +1,17 @@
-# Use a slim base image for reduced size and improved security
-FROM python:3.9-slim
+FROM amd64/python:3.9-buster
 
-# Set environment variables for Python
-ENV PYTHONDONTWRITEBYTECODE=1  # Prevent .pyc files from being created
-ENV PYTHONUNBUFFERED=1           # Ensure logs are printed in real-time
-
-# Set the working directory
 WORKDIR /app
 
-# Copy only requirements first to leverage Docker caching
-COPY requirements.txt /app/
+COPY . /app
 
-# Install dependencies
-RUN pip install --upgrade pip && \
-    pip install --no-cache-dir -r requirements.txt
+RUN pip install --upgrade pip \
+    && pip install -r requirements.txt
 
-# Copy the rest of the application code
-COPY . /app/
+RUN mkdir /app/data
+RUN chown -R 1000:1000 /app/data
 
-# Expose port 8000 for the application
 EXPOSE 8000
 
-# Run the application using Gunicorn
-CMD ["gunicorn", "-b", "0.0.0.0:8000", "app:app"]
+ENV NAME sample
+
+CMD ["gunicorn", "-b", ":8000", "app:app"]
