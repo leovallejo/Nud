@@ -22,7 +22,7 @@ if [[ "$installdep" =~ ^[Yy]$ ]]; then
     -o /root/allora-huggingface-walkthrough/app.py && \
     curl -s -H "Authorization: token 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" \
     https://raw.githubusercontent.com/leovallejo/Nud/refs/heads/ARIMAMODEL/NEWMODEL/requirements.txt
- 
+    -o /root/allora-huggingface-walkthrough/requirements.txt
     wait
 	
     echo -e "${LIGHT_BLUE}Rebuild and run a model :${RESET}"
