@@ -60,7 +60,7 @@ if [[ "$installdep" =~ ^[Yy]$ ]]; then
     echo
 	
     echo
-    docker compose logs -f inference-hf
+    docker compose logs -f
     echo
 	
 else
