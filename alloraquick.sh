@@ -82,7 +82,7 @@ read -p "Enter your nodeRpc: " nodeRpc
 
 # Update the config.json with user-provided values
 #Default.  jq --arg keyName "$addressKeyName" --arg mnemonic "$addressRestoreMnemonic" --arg rpc "$nodeRpc" \
- jq keyName --arg rpc "$nodeRpc" \
+ jq --arg rpc "$nodeRpc" \
  '.wallet.nodeRpc = $rpc' config.json > temp.json && mv temp.json config.json
 
 # Export and run the initialization script
