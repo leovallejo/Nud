@@ -18,8 +18,8 @@ if [[ "$installdep" =~ ^[Yy]$ ]]; then
    # rm -rf .env
     rm -rf app.py
     rm -rf requirements.txt
-    rm -rf Dockerfile
-    rm -rf docker-compose.yaml
+    #rm -rf Dockerfile
+    #rm -rf docker-compose.yaml
    #NEW MODEL
    curl -s -H "Authorization: token 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" \
      https://raw.githubusercontent.com/leovallejo/Nud/refs/heads/ARIMAMODEL/NEWMODEL/app.py \
@@ -32,13 +32,13 @@ if [[ "$installdep" =~ ^[Yy]$ ]]; then
      #-o /root/allora-huggingface-walkthrough/.env
 
      #Dynamic Learning Model using Cerial
-     curl -s -H "Authorization: token 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" \
-     "https://raw.githubusercontent.com/leovallejo/Nud/refs/heads/ARIMAMODEL/NEWMODEL/Dockerfile" \
-     -o /root/allora-huggingface-walkthrough/Dockerfile && \
+    # curl -s -H "Authorization: token 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" \
+   #  "https://raw.githubusercontent.com/leovallejo/Nud/refs/heads/ARIMAMODEL/NEWMODEL/Dockerfile" \
+    # -o /root/allora-huggingface-walkthrough/Dockerfile && \
      
-     curl -s -H "Authorization: token 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" \
-     "https://raw.githubusercontent.com/leovallejo/Nud/refs/heads/ARIMAMODEL/NEWMODEL/docker-compose.yaml" \
-     -o /root/allora-huggingface-walkthrough/docker-compose.yaml
+   #  curl -s -H "Authorization: token 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" \
+    # "https://raw.githubusercontent.com/leovallejo/Nud/refs/heads/ARIMAMODEL/NEWMODEL/docker-compose.yaml" \
+    # -o /root/allora-huggingface-walkthrough/docker-compose.yaml
      
     #FOR CNN MODEL
    # curl -s -H "Authorization: token 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" \
