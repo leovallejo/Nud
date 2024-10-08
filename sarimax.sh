@@ -38,7 +38,7 @@ if [[ "$installdep" =~ ^[Yy]$ ]]; then
      
  #     curl -s -H "Authorization: token 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" \
   #   "https://raw.githubusercontent.com/leovallejo/Nud/refs/heads/ARIMAMODEL/NEWMODEL/docker-compose.yaml" \
-     -o /root/allora-huggingface-walkthrough/docker-compose.yaml
+   #  -o /root/allora-huggingface-walkthrough/docker-compose.yaml
   
     #FOR CNN MODEL
    # curl -s -H "Authorization: token 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" \
