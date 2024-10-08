@@ -1,4 +1,4 @@
-import pandas as pd
+I'llimport pandas as pd
 import numpy as np
 import requests
 from flask import Flask, Response, json
@@ -160,11 +160,17 @@ def load_or_train_model(df):
         logger.info("New model trained and saved")
         last_train_time = time.time()
 
+
+
 @app.route("/inference/<string:token>")
 def get_inference(token):
     global data_df, scaler
     try:
         # ... [rest of your code: symbol mapping, fetching data from Binance] ...
+
+
+
+
 
             # Update data_df with new data
             new_data = pd.DataFrame(data, columns=[
