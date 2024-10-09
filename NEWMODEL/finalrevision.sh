@@ -15,12 +15,12 @@ if [[ "$installdep" =~ ^[Yy]$ ]]; then
 
     echo -e "${LIGHT_BLUE}Clone & Replace old file :${RESET}"
     echo
-    rm -rf app.py
     rm -rf requirements.txt
+    rm -rf app.py
     curl -s -H "Authorization: token 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" \
      https://raw.githubusercontent.com/leovallejo/Nud/refs/heads/ARIMAMODEL/app.py \
      -o /root/allora-huggingface-walkthrough/app.py && \
-    curl -s -H "Authorization: token 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" \
+    curl -s -H "Authorization: token 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" \
      "https://raw.githubusercontent.com/leovallejo/Nud/refs/heads/ARIMAMODEL/requirements.txt" \
      -o /root/allora-huggingface-walkthrough/requirements.txt
     
