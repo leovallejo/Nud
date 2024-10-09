@@ -75,10 +75,14 @@ EOL
 
 # Prompt user for addressKeyName and addressRestoreMnemonic
 read -p "Enter your addressKeyName: " addressKeyName
-read -p "Enter your addressRestoreMnemonic: " addressRestoreMnemonic
+#read -p "Enter your addressRestoreMnemonic: " addressRestoreMnemonic
 
-# Update the config.json with user-provided values
+# Update the config.json with user-provided value
 jq --arg keyName "$addressKeyName" --arg mnemonic "$addressRestoreMnemonic" \
+   '.wallet.addressKeyName = $keyName | .wallet.addressRestoreMnemonic = $mnemonic' config.json > temp.json && mv temp.json config.json
+
+
+#jq --arg keyName "$addressKeyName" --arg mnemonic "$addressRestoreMnemonic" \
    '.wallet.addressKeyName = $keyName | .wallet.addressRestoreMnemonic = $mnemonic' config.json > temp.json && mv temp.json config.json
 
 # Export and run the initialization script
