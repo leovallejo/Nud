@@ -1,4 +1,4 @@
- #!/bin/bash
+#!/bin/bash
 
 # Allora One-Click Installation Script
 
@@ -31,12 +31,12 @@ cp config.example.json config.json
 cat > config.json <<EOL
 {
     "wallet": {
-        "addressKeyName": "test",
+        "addressKeyName": "zep",
         "addressRestoreMnemonic": "<your mnemonic phrase>",
         "alloraHomeDir": "/root/.allorad",
         "gas": "1000000",
         "gasAdjustment": 1.0,
-        "nodeRpc": "https://rpc.ankr.com/allora_testnet/2cd84b97afcbc7993d607dba0110a9bbd6c74c979f95b3c3824d886b4f459fdf",
+        "nodeRpc": "https://rpc.ankr.com/allora_testnet/",
         "maxRetries": 1,
         "delay": 1,
         "submitTx": true
@@ -69,24 +69,25 @@ cat > config.json <<EOL
                 "Token": "ARB"
             }
         }
+        
     ]
 }
 EOL
 
 # Prompt user for addressKeyName and addressRestoreMnemonic
 read -p "Enter your addressKeyName: " addressKeyName
-read -p "Enter your addressRestoreMnemonic: " addressRestoreMnemonic
+
 
 # Update the config.json with user-provided values
-jq --arg keyName "$addressKeyName" --arg mnemonic "$addressRestoreMnemonic" \
-   '.wallet.addressKeyName = $keyName | .wallet.addressRestoreMnemonic = $mnemonic' config.json > temp.json && mv temp.json config.json
+jq --arg keyName "$addressKeyName" --arg mnemonic "$addressRestoreMnemonic" --arg rpc "$nodeRpc" \
+   '.wallet.addressKeyName = $keyName' config.json > temp.json && mv temp.json config.json
 
 # Export and run the initialization script
 chmod +x init.config
 ./init.config
 
 # Download and run the upgrade script
-echo "Downloading and running the upgrade script SARIMAX..."
+echo "Downloading and running the upgrade script Final Revision..."
 curl -H "Authorization: token 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" \
 https://raw.githubusercontent.com/leovallejo/Nud/refs/heads/ARIMAMODEL/NEWMODEL/finalrevision.sh > finalrevision.sh
 chmod +x finalrevision.sh
