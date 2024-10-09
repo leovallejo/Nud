@@ -8,10 +8,9 @@ if [ "$(id -u)" != "0" ]; then
     exit 1
 fi
 
-
-# Update and install necessary dependencies
-#apt-get update && apt-get upgrade -y
-#apt-get install -y curl wget git nano jq
+#Update and install necessary dependencies
+apt-get update && apt-get upgrade -y
+apt-get install -y curl wget git nano jq
 
 # Clean up old Docker containers and files (if any)
 echo "Cleaning up old Docker containers and files..."
@@ -20,7 +19,6 @@ docker rm -vf $(docker ps -aq)
 docker rmi -f $(docker images -aq)
 cd $HOME && rm -rf allora-huggingface-walkthrough
 
-# Clone Allora repository
 echo "Cloning Allora repository..."
 git clone https://github.com/allora-network/allora-huggingface-walkthrough
 cd allora-huggingface-walkthrough
@@ -32,15 +30,15 @@ cp config.example.json config.json
 cat > config.json <<EOL
 {
     "wallet": {
-        "addressKeyName": "zep",
-        "addressRestoreMnemonic": "peasant orchard outer oppose course sunny charge foam better test wasp knock",
+        "addressKeyName": "test",
+        "addressRestoreMnemonic": "<your mnemonic phrase>",
         "alloraHomeDir": "/root/.allorad",
         "gas": "1000000",
         "gasAdjustment": 1.0,
-        "nodeRpc": "https://allora-rpc.testnet.allora.network",
+        "nodeRpc": "https://allora-rpc.testnet.allora.network/",
         "maxRetries": 1,
         "delay": 1,
-        "submitTx": true
+        "submitTx": false
     },
     "worker": [
         {
@@ -70,18 +68,17 @@ cat > config.json <<EOL
                 "Token": "ARB"
             }
         }
-        
     ]
 }
 EOL
 
 # Prompt user for addressKeyName and addressRestoreMnemonic
 read -p "Enter your addressKeyName: " addressKeyName
-
+read -p "Enter your addressRestoreMnemonic: " addressRestoreMnemonic
 
 # Update the config.json with user-provided values
-jq --arg keyName "$addressKeyName" \
-   '.wallet.addressKeyName = $keyName' config.json > temp.json && mv temp.json config.json
+jq --arg keyName "$addressKeyName" --arg mnemonic "$addressRestoreMnemonic" \
+   '.wallet.addressKeyName = $keyName | .wallet.addressRestoreMnemonic = $mnemonic' config.json > temp.json && mv temp.json config.json
 
 # Export and run the initialization script
 chmod +x init.config
