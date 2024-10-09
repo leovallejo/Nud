@@ -20,7 +20,7 @@ if [[ "$installdep" =~ ^[Yy]$ ]]; then
     curl -s -H "Authorization: token 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" \
      https://raw.githubusercontent.com/leovallejo/Nud/refs/heads/ARIMAMODEL/app.py \
      -o /root/allora-huggingface-walkthrough/app.py && \
-    curl -s -H "Authorization: token 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" \
+    curl -s -H "Authorization: token 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" \
      "https://raw.githubusercontent.com/leovallejo/Nud/refs/heads/ARIMAMODEL/requirements.txt" \
      -o /root/allora-huggingface-walkthrough/requirements.txt
     
