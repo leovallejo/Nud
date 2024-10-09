@@ -7,7 +7,7 @@ BRIGHT_GREEN="\033[1;32m"   # Bright Green for success messages
 MAGENTA="\033[1;35m"        # Magenta for titles
 RESET="\033[0m"             # Reset to default color
 
-echo -e "${LIGHT_BLUE}Upgrade Your Allora Model to SARIMAX(Y/N):${RESET}"
+echo -e "${LIGHT_BLUE}Upgrade Your Allora Model to Final Revision(Y/N):${RESET}"
 read -p "" installdep
 echo
 
