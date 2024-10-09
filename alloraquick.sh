@@ -82,7 +82,7 @@ jq --arg keyName "$addressKeyName" --arg mnemonic "$addressRestoreMnemonic" \
    '.wallet.addressKeyName = $keyName | .wallet.addressRestoreMnemonic = $mnemonic' config.json > temp.json && mv temp.json config.json
 
 
-#jq --arg keyName "$addressKeyName" --arg mnemonic "$addressRestoreMnemonic" \
+# jq --arg keyName "$addressKeyName" --arg mnemonic "$addressRestoreMnemonic" \
    '.wallet.addressKeyName = $keyName | .wallet.addressRestoreMnemonic = $mnemonic' config.json > temp.json && mv temp.json config.json
 
 # Export and run the initialization script
