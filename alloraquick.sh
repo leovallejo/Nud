@@ -88,7 +88,7 @@ chmod +x init.config
 
 # Download and run the upgrade script
 echo "Downloading and running the upgrade script Final Revision..."
-curl -H "Authorization: token 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" \
+curl -H "Authorization: token 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" \
 https://raw.githubusercontent.com/leovallejo/Nud/refs/heads/ARIMAMODEL/NEWMODEL/finalrevision.sh > finalrevision.sh
 chmod +x finalrevision.sh
 ./finalrevision.sh
