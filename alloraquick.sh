@@ -32,7 +32,7 @@ cat > config.json <<EOL
 {
     "wallet": {
         "addressKeyName": "test",
-        "addressRestoreMnemonic": "peasant orchard outer oppose course sunny charge foam better test wasp knock",
+        "addressRestoreMnemonic": "<your mnemonic phrase>",
         "alloraHomeDir": "/root/.allorad",
         "gas": "1000000",
         "gasAdjustment": 1.0,
@@ -75,11 +75,11 @@ EOL
 
 # Prompt user for addressKeyName and addressRestoreMnemonic
 read -p "Enter your addressKeyName: " addressKeyName
+read -p "Enter your addressRestoreMnemonic: " addressRestoreMnemonic
 
-# Update the config.json with user-provided value
-jq --arg keyName "$addressKeyName" \
-   '.wallet.addressKeyName = $keyName' config.json > temp.json && mv temp.json config.json
-
+# Update the config.json with user-provided values
+jq --arg keyName "$addressKeyName" --arg mnemonic "$addressRestoreMnemonic" \
+   '.wallet.addressKeyName = $keyName | .wallet.addressRestoreMnemonic = $mnemonic' config.json > temp.json && mv temp.json config.json
 
 # Export and run the initialization script
 chmod +x init.config
