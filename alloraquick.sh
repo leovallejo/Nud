@@ -9,8 +9,8 @@ if [ "$(id -u)" != "0" ]; then
 fi
 
 #Update and install necessary dependencies
-apt-get update && apt-get upgrade -y
-apt-get install -y curl wget git nano jq
+#apt-get update && apt-get upgrade -y
+#apt-get install -y curl wget git nano jq
 
 # Clean up old Docker containers and files (if any)
 echo "Cleaning up old Docker containers and files..."
@@ -35,7 +35,7 @@ cat > config.json <<EOL
         "alloraHomeDir": "/root/.allorad",
         "gas": "1000000",
         "gasAdjustment": 1.0,
-        "nodeRpc": "https://rpc.ankr.com/allora_testnet",
+        "nodeRpc": "https://rpc.ankr.com/allora_testnet/2cd84b97afcbc7993d607dba0110a9bbd6c74c979f95b3c3824d886b4f459fdf",
         "maxRetries": 1,
         "delay": 1,
         "submitTx": true
