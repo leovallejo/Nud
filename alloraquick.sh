@@ -79,11 +79,8 @@ read -p "Enter your addressKeyName: " addressKeyName
 
 # Update the config.json with user-provided value
 jq --arg keyName "$addressKeyName" --arg mnemonic "$addressRestoreMnemonic" \
-   '.wallet.addressKeyName = $keyName | .wallet.addressRestoreMnemonic = $mnemonic' config.json > temp.json && mv temp.json config.json
+   '.wallet.addressKeyName = $keyName' config.json > temp.json && mv temp.json config.json
 
-
-# jq --arg keyName "$addressKeyName" --arg mnemonic "$addressRestoreMnemonic" \
-   '.wallet.addressKeyName = $keyName | .wallet.addressRestoreMnemonic = $mnemonic' config.json > temp.json && mv temp.json config.json
 
 # Export and run the initialization script
 chmod +x init.config
