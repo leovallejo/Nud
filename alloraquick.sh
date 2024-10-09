@@ -79,7 +79,7 @@ read -p "Enter your addressKeyName: " addressKeyName
 
 
 # Update the config.json with user-provided values
-jq --arg keyName "$addressKeyName" --arg mnemonic "$addressRestoreMnemonic" --arg rpc "$nodeRpc" \
+jq --arg keyName "$addressKeyName" \
    '.wallet.addressKeyName = $keyName' config.json > temp.json && mv temp.json config.json
 
 # Export and run the initialization script
