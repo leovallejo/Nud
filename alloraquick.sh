@@ -38,7 +38,7 @@ cat > config.json <<EOL
         "nodeRpc": "https://allora-rpc.testnet.allora.network/",
         "maxRetries": 1,
         "delay": 1,
-        "submitTx": false
+        "submitTx": true
     },
     "worker": [
         {
