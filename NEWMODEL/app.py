@@ -16,6 +16,7 @@ import tensorflow as tf
 from tensorflow.keras import backend as K
 
 app = Flask(__name__)
+
 logging.basicConfig(level=logging.DEBUG, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger("main")
 
@@ -44,14 +45,19 @@ def calculate_rsi(prices, window=14):
 def prepare_data(df):
     features = ['open', 'high', 'low', 'close', 'volume', 'MA7', 'MA14', 'RSI']
     df = handle_nan_values(df)
+    
     for feature in features:
         df[feature] = df[feature].astype(np.float64)
+    
     if df[features].isna().any().any():
         logger.error("NaN values still present after handling")
         raise ValueError("Unable to handle all NaN values")
+    
     scaler = MinMaxScaler(feature_range=(-1, 1))
     scaled_data = scaler.fit_transform(df[features].astype(np.float64))
+    
     logger.debug(f"Scaled data statistics: min={np.min(scaled_data)}, max={np.max(scaled_data)}, mean={np.mean(scaled_data)}")
+    
     return scaled_data, scaler
 
 def create_sequences(data, sequence_length, forecast_horizon=20):
@@ -104,16 +110,8 @@ def sanity_check_prediction(prediction, current_price):
     upper_bound = current_price * (1 + max_change)
     return max(min(prediction, upper_bound), lower_bound)
 
-# Global variables for model and data
-model = None
-scaler = None
-last_update_time = None
-update_interval_minutes = 5  # Update the model every 5 minutes
-df = None
-
 @app.route("/inference/<string:token>")
 def get_inference(token):
-    global model, scaler, last_update_time, df
     try:
         symbol_map = {
             'ETH': 'ETHUSDT',
@@ -122,76 +120,123 @@ def get_inference(token):
             'SOL': 'SOLUSDT',
             'ARB': 'ARBUSDT'
         }
-
         token = token.upper()
-
         if token in symbol_map:
             symbol = symbol_map[token]
         else:
             logger.error(f"Unsupported token: {token}")
             return Response(json.dumps({"error": "Unsupported token"}), status=400, mimetype='application/json')
 
-        # Check if model needs update
-        current_time = datetime.utcnow()
-        if model is None or scaler is None or (current_time - last_update_time).total_seconds() > update_interval_minutes * 60:
-            logger.info("Updating the model...")
-            url = get_binance_url(symbol=symbol)
-            response = requests.get(url)
+        url = get_binance_url(symbol=symbol)
+        logger.debug(f"Fetching data from URL: {url}")
+        response = requests.get(url)
+        if response.status_code == 200:
+            data = response.json()
+            df = pd.DataFrame(data, columns=[
+                "open_time", "open", "high", "low", "close", "volume",
+                "close_time", "quote_asset_volume", "number_of_trades",
+                "taker_buy_base_asset_volume", "taker_buy_quote_asset_volume", "ignore"
+            ])
+            numeric_columns = ["open", "high", "low", "close", "volume"]
+            df[numeric_columns] = df[numeric_columns].astype(float)
+            df["close_time"] = pd.to_datetime(df["close_time"], unit='ms')
+            df = df[["close_time", "open", "high", "low", "close", "volume"]]
+            df.columns = ["date", "open", "high", "low", "close", "volume"]
+            df.set_index("date", inplace=True)
 
-            if response.status_code == 200:
-                data = response.json()
-                df = pd.DataFrame(data, columns=[
-                    "open_time", "open", "high", "low", "close", "volume",
-                    "close_time", "quote_asset_volume", "number_of_trades",
-                    "taker_buy_base_asset_volume", "taker_buy_quote_asset_volume", "ignore"
-                ])
-                numeric_columns = ["open", "high", "low", "close", "volume"]
-                df[numeric_columns] = df[numeric_columns].astype(float)
-                df["close_time"] = pd.to_datetime(df["close_time"], unit='ms')
-                df = df[["close_time", "open", "high", "low", "close", "volume"]]
-                df.columns = ["date", "open", "high", "low", "close", "volume"]
-                df.set_index("date", inplace=True)
+            logger.debug(f"Data types after conversion: {df.dtypes}")
+            if not all(df[col].dtype == 'float64' for col in numeric_columns):
+                raise ValueError("Failed to convert all numeric columns to float")
 
+            logger.debug(f"Sample of data after initial load:\n{df.head()}")
+
+            try:
                 df = add_technical_indicators(df)
-                scaled_data, scaler = prepare_data(df)
-
-                sequence_length = 60
-                forecast_horizon = 20
-                X, y = create_sequences(scaled_data, sequence_length, forecast_horizon)
-                X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, shuffle=False)
-
-                model = build_cnn_lstm_model((sequence_length, X.shape[2]), output_size=forecast_horizon)
-                callbacks = [
-                    EarlyStopping(patience=10, restore_best_weights=True),
-                    ModelCheckpoint('best_model.h5', save_best_only=True),
-                    NanTerminateCallback()
-                ]
-                model.fit(X_train, y_train, validation_data=(X_test, y_test),
-                          epochs=100, batch_size=32, callbacks=callbacks, verbose=0)
-
-                last_update_time = datetime.utcnow()
-            else:
-                logger.error(f"Failed to retrieve data from Binance API. Status code: {response.status_code}")
-                return Response(json.dumps({"error": "Failed to retrieve data from Binance API", "details": response.text}),
-                                status=response.status_code,
+                logger.debug(f"Data statistics after adding indicators:\n{df.describe()}")
+                logger.debug(f"NaN count after adding indicators:\n{df.isna().sum()}")
+            except Exception as e:
+                logger.error(f"Error adding technical indicators: {str(e)}")
+                logger.error(traceback.format_exc())
+                return Response(json.dumps({"error": "Error processing data", "details": str(e)}), 
+                                status=500, 
                                 mimetype='application/json')
 
-        # Use the loaded or updated model for prediction
-        current_price = df.iloc[-1]["close"]
-        last_sequence = scaled_data[-sequence_length:]
-        predictions = model.predict(last_sequence.reshape(1, sequence_length, scaled_data.shape[1]))
-        predicted_prices = scaler.inverse_transform(np.column_stack((predictions.reshape(-1, 1), np.zeros((forecast_horizon, scaled_data.shape[1]-1)))))
-        final_prediction = round(float(predicted_prices[-1][0]), 2)
+            current_price = df.iloc[-1]["close"]
+            current_time = df.index[-1]
+            logger.info(f"Current Price: {current_price} at {current_time}")
 
-        final_prediction = sanity_check_prediction(final_prediction, current_price)
-        logger.info(f"Final Prediction (20 minutes): {final_prediction}")
-        return Response(str(final_prediction), status=200, mimetype='text/plain')
+            logger.debug(f"Data sample before preparation:\n{df.tail()}")
 
+            try:
+                scaled_data, scaler = prepare_data(df)
+            except ValueError as e:
+                logger.error(f"Error preparing data: {str(e)}")
+                return Response(json.dumps({"error": "Error preparing data", "details": str(e)}), 
+                                status=500, 
+                                mimetype='application/json')
+
+            sequence_length = 60
+            forecast_horizon = 20
+            X, y = create_sequences(scaled_data, sequence_length, forecast_horizon)
+
+            logger.debug(f"Sequence shape: {X.shape}")
+            logger.debug(f"Target shape: {y.shape}")
+            logger.debug(f"X statistics: min={np.min(X)}, max={np.max(X)}, mean={np.mean(X)}")
+            logger.debug(f"y statistics: min={np.min(y)}, max={np.max(y)}, mean={np.mean(y)}")
+
+            X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, shuffle=False)
+
+            if np.isnan(X_train).any() or np.isnan(y_train).any():
+                logger.error("NaN values detected in training data")
+                raise ValueError("NaN values in training data")
+
+            model = build_cnn_lstm_model((sequence_length, X.shape[2]), output_size=forecast_horizon)
+
+            callbacks = [
+                EarlyStopping(patience=10, restore_best_weights=True),
+                ModelCheckpoint('best_model.h5', save_best_only=True),
+                NanTerminateCallback()
+            ]
+
+            logger.debug("Training model...")
+            history = model.fit(X_train, y_train, validation_data=(X_test, y_test), 
+                                epochs=100, batch_size=32, callbacks=callbacks, verbose=0)
+            
+            logger.debug(f"Model training history: {history.history}")
+            logger.debug(f"Final training loss: {history.history['loss'][-1]}")
+            logger.debug(f"Final validation loss: {history.history['val_loss'][-1]}")
+
+            last_sequence = X[-1]
+            logger.debug(f"Last sequence statistics: min={np.min(last_sequence)}, max={np.max(last_sequence)}, mean={np.mean(last_sequence)}")
+
+            logger.debug(f"Making predictions for 20 steps...")
+            try:
+                predictions = model.predict(last_sequence.reshape(1, sequence_length, X.shape[2]))
+                predicted_prices = scaler.inverse_transform(np.column_stack((predictions.reshape(-1, 1), np.zeros((forecast_horizon, X.shape[2]-1)))))
+                final_prediction = round(float(predicted_prices[-1][0]), 2)
+                if not is_valid_prediction(final_prediction):
+                    logger.warning("Main prediction invalid, using fallback method")
+                    final_prediction = fallback_prediction(df)
+            except Exception as e:
+                logger.error(f"Error in main prediction: {str(e)}")
+                logger.warning("Using fallback prediction method")
+                final_prediction = fallback_prediction(df)
+
+            final_prediction = sanity_check_prediction(final_prediction, current_price)
+            logger.info(f"Final Prediction (20 minutes): {final_prediction}")
+
+            # Return the prediction as a string to avoid JSON parsing issues
+            return Response(str(final_prediction), status=200, mimetype='text/plain')
+        else:
+            logger.error(f"Failed to retrieve data from Binance API. Status code: {response.status_code}")
+            return Response(json.dumps({"error": "Failed to retrieve data from Binance API", "details": response.text}), 
+                            status=response.status_code, 
+                            mimetype='application/json')
     except Exception as e:
         logger.error(f"An error occurred: {str(e)}")
         logger.error(traceback.format_exc())
-        return Response(json.dumps({"error": "An internal server error occurred", "details": str(e)}),
-                        status=500,
+        return Response(json.dumps({"error": "An internal server error occurred", "details": str(e)}), 
+                        status=500, 
                         mimetype='application/json')
 
 if __name__ == "__main__":
