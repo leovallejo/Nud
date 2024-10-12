@@ -10,7 +10,7 @@ from tensorflow.keras.layers import Conv1D, MaxPooling1D, Flatten, Dense, Dropou
 from tensorflow.keras.optimizers import Adam
 from tensorflow.keras.callbacks import EarlyStopping, ModelCheckpoint
 from tensorflow.keras.regularizers import l2
-from sklearn.model_selection import train_test_split, TimeSeriesSplit
+from sklearn.model_selection import train_test_split
 import traceback
 import tensorflow as tf
 from tensorflow.keras import backend as K
@@ -29,7 +29,6 @@ def handle_nan_values(df):
     return df
 
 def add_technical_indicators(df):
-    # Add more indicators here if needed (e.g., Bollinger Bands, MACD)
     df['MA7'] = df['close'].rolling(window=7).mean()
     df['MA14'] = df['close'].rolling(window=14).mean()
     df['RSI'] = calculate_rsi(df['close'], window=14)
@@ -71,30 +70,31 @@ def create_sequences(data, sequence_length, forecast_horizon=20):
         targets.append(target)
     return np.array(sequences), np.array(targets)
 
+def custom_loss(y_true, y_pred):
+    mask = K.not_equal(y_true, 0)
+    loss = K.mean(K.square(y_true[mask] - y_pred[mask]))
+    return loss
+
 def build_cnn_lstm_model(input_shape, output_size=20):
     model = Sequential([
         Conv1D(64, kernel_size=3, activation='relu', input_shape=input_shape),
         MaxPooling1D(pool_size=2),
-        Dropout(0.2),  # Add dropout after convolutional layers
         Conv1D(128, kernel_size=3, activation='relu'),
         MaxPooling1D(pool_size=2),
-        Dropout(0.2),  # Add dropout after convolutional layers
         LSTM(64, return_sequences=True),
-        Dropout(0.2),  # Add dropout after the first LSTM layer
         LSTM(64),
-        Dropout(0.2),  # Add dropout after the second LSTM layer
         Flatten(),
         Dense(64, activation='relu', kernel_regularizer=l2(0.01)),
         Dropout(0.2),
         Dense(output_size)
     ])
     optimizer = Adam(learning_rate=0.001, clipnorm=1.0)
-    model.compile(optimizer=optimizer, loss="mse")  # Use 'mse' loss
+    model.compile(optimizer=optimizer, loss=custom_loss)
     return model
 
 class NanTerminateCallback(tf.keras.callbacks.Callback):
     def on_epoch_end(self, epoch, logs=None):
-        if logs is not None and np.isnan(logs.get('loss')):
+        if np.isnan(logs.get('loss')):
             self.model.stop_training = True
             print("NaN loss encountered, terminating training")
 
@@ -184,28 +184,27 @@ def get_inference(token):
             logger.debug(f"X statistics: min={np.min(X)}, max={np.max(X)}, mean={np.mean(X)}")
             logger.debug(f"y statistics: min={np.min(y)}, max={np.max(y)}, mean={np.mean(y)}")
 
-            # Use TimeSeriesSplit for time series cross-validation
-            tscv = TimeSeriesSplit(n_splits=5)
+            X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, shuffle=False)
+
+            if np.isnan(X_train).any() or np.isnan(y_train).any():
+                logger.error("NaN values detected in training data")
+                raise ValueError("NaN values in training data")
+
+            model = build_cnn_lstm_model((sequence_length, X.shape[2]), output_size=forecast_horizon)
+
+            callbacks = [
+                EarlyStopping(patience=10, restore_best_weights=True),
+                ModelCheckpoint('best_model.h5', save_best_only=True),
+                NanTerminateCallback()
+            ]
+
+            logger.debug("Training model...")
+            history = model.fit(X_train, y_train, validation_data=(X_test, y_test), 
+                                epochs=100, batch_size=32, callbacks=callbacks, verbose=0)
             
-            for train_index, test_index in tscv.split(X):
-                X_train, X_test = X[train_index], X[test_index]
-                y_train, y_test = y[train_index], y[test_index]
-
-                model = build_cnn_lstm_model((sequence_length, X.shape[2]), output_size=forecast_horizon)
-
-                callbacks = [
-                    EarlyStopping(patience=10, restore_best_weights=True),
-                    ModelCheckpoint('best_model.h5', save_best_only=True),
-                    NanTerminateCallback()
-                ]
-
-                logger.debug("Training model...")
-                history = model.fit(X_train, y_train, validation_data=(X_test, y_test), 
-                                    epochs=100, batch_size=32, callbacks=callbacks, verbose=0)
-                
-                logger.debug(f"Model training history: {history.history}")
-                logger.debug(f"Final training loss: {history.history['loss'][-1]}")
-                logger.debug(f"Final validation loss: {history.history['val_loss'][-1]}")
+            logger.debug(f"Model training history: {history.history}")
+            logger.debug(f"Final training loss: {history.history['loss'][-1]}")
+            logger.debug(f"Final validation loss: {history.history['val_loss'][-1]}")
 
             last_sequence = X[-1]
             logger.debug(f"Last sequence statistics: min={np.min(last_sequence)}, max={np.max(last_sequence)}, mean={np.mean(last_sequence)}")
