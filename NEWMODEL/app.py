@@ -109,10 +109,11 @@ model = None
 scaler = None
 last_update_time = None
 update_interval_minutes = 5  # Update the model every 5 minutes
+df = None
 
 @app.route("/inference/<string:token>")
 def get_inference(token):
-    global model, scaler, last_update_time
+    global model, scaler, last_update_time, df
     try:
         symbol_map = {
             'ETH': 'ETHUSDT',
