@@ -4,7 +4,7 @@ transformers[torch]
 pandas
 python-dotenv
 requests
-numpy==1.243.4
+numpy==1.23.4
 scikit-learn==1.2.0
 tensorflow
 celery==5.2.7
