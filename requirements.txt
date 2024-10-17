@@ -10,5 +10,5 @@ tensorflow
 celery==5.3.0
 redis==4.5.5
 Flask-Limiter==2.8.0
-Flask-Healthz==2.1.0
+Flask-Healthz==1.0.1
 
