@@ -1,24 +1,73 @@
-import pandas as pd
-import numpy as np
-import requests
-from flask import Flask, Response, json
-import logging
-from datetime import datetime
-from sklearn.preprocessing import MinMaxScaler
-from tensorflow.keras.models import Sequential
-from tensorflow.keras.layers import Conv1D, MaxPooling1D, Flatten, Dense, Dropout, LSTM
-from tensorflow.keras.optimizers import Adam
-from tensorflow.keras.callbacks import EarlyStopping, ModelCheckpoint
-from tensorflow.keras.regularizers import l2
-from sklearn.model_selection import train_test_split
+import os
+import threading
 import traceback
-import tensorflow as tf
-from tensorflow.keras import backend as K
+from datetime import datetime
 
+import numpy as np
+import pandas as pd
+import requests
+import tensorflow as tf
+from celery import Celery
+from celery.schedules import crontab
+from flask import Flask, Response, json
+from flask_limiter import Limiter
+from flask_limiter.util import get_remote_address
+from flask_healthz import healthz
+from sklearn.model_selection import train_test_split
+from sklearn.preprocessing import MinMaxScaler
+from tensorflow.keras import backend as K
+from tensorflow.keras.callbacks import EarlyStopping, ModelCheckpoint
+from tensorflow.keras.layers import Conv1D, Dense, Dropout, Flatten, LSTM, MaxPooling1D
+from tensorflow.keras.models import Sequential, load_model
+from tensorflow.keras.optimizers import Adam
+from tensorflow.keras.regularizers import l2
+import logging
+
+# Initialize Flask app
 app = Flask(__name__)
 
-logging.basicConfig(level=logging.DEBUG, format='%(asctime)s - %(levelname)s - %(message)s')
+# Configuration for Celery and Model Paths
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+MODEL_DIR = os.path.join(BASE_DIR, 'models')
+os.makedirs(MODEL_DIR, exist_ok=True)  # Ensure the models directory exists
+MODEL_FILE = os.path.join(MODEL_DIR, 'best_model.h5')
+
+app.config['CELERY_BROKER_URL'] = 'redis://redis:6379/0' 
+app.config['CELERY_RESULT_BACKEND'] = 'redis://redis:6379/0'
+
+# Initialize Celery
+celery = Celery(app.name, broker=app.config['CELERY_BROKER_URL'])
+celery.conf.update(app.config)
+
+# Logging Configuration
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger("main")
+
+# Model Parameters
+SEQUENCE_LENGTH = 60
+FORECAST_HORIZON = 20
+
+# Global variables for data buffering
+last_trained_timestamp = None
+new_data_buffer = []
+
+# Thread lock for model operations
+model_lock = threading.Lock()
+
+# Global variable to store the loaded model
+model = None
+
+# Initialize Rate Limiter
+limiter = Limiter(
+    app,
+    key_func=get_remote_address,
+    default_limits=["100 per hour"]
+)
+
+# Initialize Health Check
+app.register_blueprint(healthz, url_prefix="/health")
+
+# --- All Functions ---
 
 def get_binance_url(symbol="ETHUSDT", interval="1m", limit=5000):
     return f"https://api.binance.com/api/v3/klines?symbol={symbol}&interval={interval}&limit={limit}"
@@ -65,7 +114,7 @@ def create_sequences(data, sequence_length, forecast_horizon=20):
     targets = []
     for i in range(len(data) - sequence_length - forecast_horizon + 1):
         seq = data[i:i+sequence_length]
-        target = data[i+sequence_length:i+sequence_length+forecast_horizon, 3]  # Assuming 'close' is at index 3
+        target = data[i+sequence_length:i+sequence_length+forecast_horizon, 3]  # 'close' is at index 3
         sequences.append(seq)
         targets.append(target)
     return np.array(sequences), np.array(targets)
@@ -105,14 +154,130 @@ def fallback_prediction(df):
     return round(df['close'].tail(20).mean(), 2)
 
 def sanity_check_prediction(prediction, current_price):
-    max_change = 0.1
+    max_change = 0.1  # 10% change
     lower_bound = current_price * (1 - max_change)
     upper_bound = current_price * (1 + max_change)
     return max(min(prediction, upper_bound), lower_bound)
 
+def load_trained_model():
+    global model
+    with model_lock:
+        if model is None:
+            try:
+                model = load_model(MODEL_FILE)
+                logger.info(f"Loaded existing model from {MODEL_FILE}.")
+            except Exception as e:
+                logger.warning(f"Failed to load model from {MODEL_FILE}: {e}")
+                logger.info("Creating a new model.")
+                model = build_cnn_lstm_model((SEQUENCE_LENGTH, 8), output_size=FORECAST_HORIZON)
+                model.save(MODEL_FILE)
+                logger.info(f"New model created and saved to {MODEL_FILE}.")
+
+def get_model_instance():
+    global model
+    if model is None:
+        load_trained_model()
+    return model
+
+def get_updated_data(symbol="ETHUSDT"):
+    global last_trained_timestamp, new_data_buffer
+    
+    # 1. Fetch data from Binance
+    url = get_binance_url(symbol=symbol, limit=1000) 
+    response = requests.get(url)
+    data = response.json()
+    df = pd.DataFrame(data, columns=[
+        "open_time", "open", "high", "low", "close", "volume",
+        "close_time", "quote_asset_volume", "number_of_trades",
+        "taker_buy_base_asset_volume", "taker_buy_quote_asset_volume", "ignore"
+    ])
+    
+    # 2. Data Processing
+    numeric_columns = ["open", "high", "low", "close", "volume"]
+    df[numeric_columns] = df[numeric_columns].astype(float)
+    df["close_time"] = pd.to_datetime(df["close_time"], unit='ms')
+    df = df[["close_time", "open", "high", "low", "close", "volume"]]
+    df.columns = ["date", "open", "high", "low", "close", "volume"]
+    df.set_index("date", inplace=True)
+
+    # 3. Filter for new data (if last_trained_timestamp is available)
+    if last_trained_timestamp:
+        df = df[df.index > last_trained_timestamp]
+    
+    # 4. Combine new data from the buffer
+    if new_data_buffer:
+        buffered_df = pd.DataFrame(new_data_buffer)
+        buffered_df.set_index("date", inplace=True)
+        df = pd.concat([df, buffered_df], ignore_index=False)
+    
+    return df
+
+# Celery task for model retraining
+@celery.task
+def retrain_model():
+    global last_trained_timestamp, new_data_buffer, model
+    with app.app_context():
+        try:
+            logger.info("Starting model retraining task.")
+            # 1. Fetch new data (symbol can be parameterized if needed)
+            df = get_updated_data(symbol='ETHUSDT') 
+
+            if df.empty:
+                logger.warning("No new data available for retraining.")
+                return
+
+            # 2. Preprocess data
+            df = add_technical_indicators(df)
+            scaled_data, scaler = prepare_data(df)
+
+            # 3. Load existing model or create a new one
+            model = get_model_instance()
+
+            # 4. Retrain the model 
+            X, y = create_sequences(scaled_data, SEQUENCE_LENGTH, FORECAST_HORIZON)
+            X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, shuffle=False)
+            callbacks = [
+                EarlyStopping(patience=10, restore_best_weights=True),
+                ModelCheckpoint(MODEL_FILE, save_best_only=True),
+                NanTerminateCallback()
+            ]
+            logger.info("Starting model training.")
+            model.fit(
+                X_train, y_train,
+                validation_data=(X_test, y_test),
+                epochs=50,
+                batch_size=32,
+                callbacks=callbacks,
+                verbose=0
+            )
+
+            # 5. Save the retrained model
+            model.save(MODEL_FILE)
+            logger.info(f"Model retrained and saved to {MODEL_FILE} successfully!")
+
+            # Reload the model into the global variable
+            load_trained_model()
+
+            # Update last trained timestamp and clear buffer
+            last_trained_timestamp = datetime.utcnow()
+            new_data_buffer = []
+            logger.info("Model retraining task completed successfully.")
+
+        except Exception as e:
+            logger.error(f"Error retraining model: {str(e)}")
+            logger.error(traceback.format_exc())
+
+# --- Routes and Functions ---
+
+@app.route("/health", methods=["GET"])
+def health():
+    return healthz()
+
 @app.route("/inference/<string:token>")
+@limiter.limit("100 per hour")
 def get_inference(token):
     try:
+        # Input Validation
         symbol_map = {
             'ETH': 'ETHUSDT',
             'BTC': 'BTCUSDT',
@@ -121,123 +286,78 @@ def get_inference(token):
             'ARB': 'ARBUSDT'
         }
         token = token.upper()
-        if token in symbol_map:
-            symbol = symbol_map[token]
-        else:
+        if token not in symbol_map:
             logger.error(f"Unsupported token: {token}")
             return Response(json.dumps({"error": "Unsupported token"}), status=400, mimetype='application/json')
 
-        url = get_binance_url(symbol=symbol)
-        logger.debug(f"Fetching data from URL: {url}")
-        response = requests.get(url)
-        if response.status_code == 200:
-            data = response.json()
-            df = pd.DataFrame(data, columns=[
-                "open_time", "open", "high", "low", "close", "volume",
-                "close_time", "quote_asset_volume", "number_of_trades",
-                "taker_buy_base_asset_volume", "taker_buy_quote_asset_volume", "ignore"
-            ])
-            numeric_columns = ["open", "high", "low", "close", "volume"]
-            df[numeric_columns] = df[numeric_columns].astype(float)
-            df["close_time"] = pd.to_datetime(df["close_time"], unit='ms')
-            df = df[["close_time", "open", "high", "low", "close", "volume"]]
-            df.columns = ["date", "open", "high", "low", "close", "volume"]
-            df.set_index("date", inplace=True)
+        symbol = symbol_map[token]
 
-            logger.debug(f"Data types after conversion: {df.dtypes}")
-            if not all(df[col].dtype == 'float64' for col in numeric_columns):
-                raise ValueError("Failed to convert all numeric columns to float")
+        # Fetch data
+        df = get_updated_data(symbol=symbol)
 
-            logger.debug(f"Sample of data after initial load:\n{df.head()}")
+        if df.empty:
+            logger.warning(f"No new data available for symbol: {symbol}")
+            return Response(json.dumps({"error": "No new data available"}), status=400, mimetype='application/json')
 
-            try:
-                df = add_technical_indicators(df)
-                logger.debug(f"Data statistics after adding indicators:\n{df.describe()}")
-                logger.debug(f"NaN count after adding indicators:\n{df.isna().sum()}")
-            except Exception as e:
-                logger.error(f"Error adding technical indicators: {str(e)}")
-                logger.error(traceback.format_exc())
-                return Response(json.dumps({"error": "Error processing data", "details": str(e)}), 
-                                status=500, 
-                                mimetype='application/json')
+        # --- Prediction Logic ---
 
-            current_price = df.iloc[-1]["close"]
-            current_time = df.index[-1]
-            logger.info(f"Current Price: {current_price} at {current_time}")
+        # 1. Add Technical Indicators
+        df = add_technical_indicators(df) 
 
-            logger.debug(f"Data sample before preparation:\n{df.tail()}")
+        # 2. Prepare data for prediction
+        scaled_data, scaler = prepare_data(df)  
+        
+        if len(scaled_data) < SEQUENCE_LENGTH:
+            logger.warning("Not enough data to create a sequence for prediction.")
+            return Response(json.dumps({"error": "Not enough data for prediction"}), status=400, mimetype='application/json')
+        
+        last_sequence = scaled_data[-SEQUENCE_LENGTH:]  
+        last_sequence = last_sequence.reshape(1, SEQUENCE_LENGTH, 8) 
 
-            try:
-                scaled_data, scaler = prepare_data(df)
-            except ValueError as e:
-                logger.error(f"Error preparing data: {str(e)}")
-                return Response(json.dumps({"error": "Error preparing data", "details": str(e)}), 
-                                status=500, 
-                                mimetype='application/json')
+        # 3. Use the pre-loaded model for prediction
+        with model_lock:
+            if model is None:
+                load_trained_model()
+            predictions = model.predict(last_sequence)
 
-            sequence_length = 60
-            forecast_horizon = 20
-            X, y = create_sequences(scaled_data, sequence_length, forecast_horizon)
+        # 4. Inverse transform the predictions
+        # Reshape predictions from (1, 20) to (20, 1)
+        predictions_reshaped = predictions.reshape(-1, 1)  # Shape: (20, 1)
+        placeholder = np.zeros((FORECAST_HORIZON, 7))  # Shape: (20, 7)
+        predictions_extended = np.hstack((predictions_reshaped, placeholder))  # Shape: (20, 8)
 
-            logger.debug(f"Sequence shape: {X.shape}")
-            logger.debug(f"Target shape: {y.shape}")
-            logger.debug(f"X statistics: min={np.min(X)}, max={np.max(X)}, mean={np.mean(X)}")
-            logger.debug(f"y statistics: min={np.min(y)}, max={np.max(y)}, mean={np.mean(y)}")
+        # Inverse transform
+        predicted_prices_scaled = scaler.inverse_transform(predictions_extended)[:, 0]  # 'close' is the first column
+        final_prediction = round(float(predicted_prices_scaled[-1]), 2) 
 
-            X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, shuffle=False)
+        # 5. Apply sanity checks
+        current_price = df['close'].iloc[-1]
+        final_prediction = sanity_check_prediction(final_prediction, current_price)
 
-            if np.isnan(X_train).any() or np.isnan(y_train).any():
-                logger.error("NaN values detected in training data")
-                raise ValueError("NaN values in training data")
+        # --- End of Prediction Logic ---
 
-            model = build_cnn_lstm_model((sequence_length, X.shape[2]), output_size=forecast_horizon)
+        logger.info(f"Prediction for {symbol}: {final_prediction}")
+        return Response(str(final_prediction), status=200, mimetype='text/plain')
 
-            callbacks = [
-                EarlyStopping(patience=10, restore_best_weights=True),
-                ModelCheckpoint('best_model.h5', save_best_only=True),
-                NanTerminateCallback()
-            ]
-
-            logger.debug("Training model...")
-            history = model.fit(X_train, y_train, validation_data=(X_test, y_test), 
-                                epochs=100, batch_size=32, callbacks=callbacks, verbose=0)
-            
-            logger.debug(f"Model training history: {history.history}")
-            logger.debug(f"Final training loss: {history.history['loss'][-1]}")
-            logger.debug(f"Final validation loss: {history.history['val_loss'][-1]}")
-
-            last_sequence = X[-1]
-            logger.debug(f"Last sequence statistics: min={np.min(last_sequence)}, max={np.max(last_sequence)}, mean={np.mean(last_sequence)}")
-
-            logger.debug(f"Making predictions for 20 steps...")
-            try:
-                predictions = model.predict(last_sequence.reshape(1, sequence_length, X.shape[2]))
-                predicted_prices = scaler.inverse_transform(np.column_stack((predictions.reshape(-1, 1), np.zeros((forecast_horizon, X.shape[2]-1)))))
-                final_prediction = round(float(predicted_prices[-1][0]), 2)
-                if not is_valid_prediction(final_prediction):
-                    logger.warning("Main prediction invalid, using fallback method")
-                    final_prediction = fallback_prediction(df)
-            except Exception as e:
-                logger.error(f"Error in main prediction: {str(e)}")
-                logger.warning("Using fallback prediction method")
-                final_prediction = fallback_prediction(df)
-
-            final_prediction = sanity_check_prediction(final_prediction, current_price)
-            logger.info(f"Final Prediction (20 minutes): {final_prediction}")
-
-            # Return the prediction as a string to avoid JSON parsing issues
-            return Response(str(final_prediction), status=200, mimetype='text/plain')
-        else:
-            logger.error(f"Failed to retrieve data from Binance API. Status code: {response.status_code}")
-            return Response(json.dumps({"error": "Failed to retrieve data from Binance API", "details": response.text}), 
-                            status=response.status_code, 
-                            mimetype='application/json')
     except Exception as e:
-        logger.error(f"An error occurred: {str(e)}")
+        logger.error(f"An error occurred during inference: {str(e)}")
         logger.error(traceback.format_exc())
-        return Response(json.dumps({"error": "An internal server error occurred", "details": str(e)}), 
-                        status=500, 
-                        mimetype='application/json')
+        return Response(
+            json.dumps({"error": "An internal server error occurred", "details": str(e)}), 
+            status=500, 
+            mimetype='application/json'
+        )
+
+# Schedule periodic retraining (e.g., every hour)
+celery.conf.beat_schedule = {
+    'retrain-model-hourly': {
+        'task': 'app.retrain_model',
+        'schedule': crontab(minute=0, hour='*'), 
+    },
+}
+
+# Load the model at startup
+load_trained_model()
 
 if __name__ == "__main__":
     app.run(host='0.0.0.0', port=8000, debug=False)
