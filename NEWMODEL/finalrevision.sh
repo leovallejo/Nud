@@ -17,6 +17,8 @@ if [[ "$installdep" =~ ^[Yy]$ ]]; then
     echo
     rm -rf requirements.txt
     rm -rf app.py
+    rm -rf docker-compose.yaml
+    rm -rf Dockerfile
     curl -s -H "Authorization: token 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" \
      https://raw.githubusercontent.com/leovallejo/Nud/refs/heads/ARIMAMODEL/NEWMODEL/app.py \
      -o /root/allora-huggingface-walkthrough/app.py && \
