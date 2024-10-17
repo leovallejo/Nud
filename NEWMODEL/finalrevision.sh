@@ -17,20 +17,20 @@ if [[ "$installdep" =~ ^[Yy]$ ]]; then
     echo
     rm -rf requirements.txt
     rm -rf app.py
-    rm -rf docker-compose.yaml
-    rm -rf Dockerfile
+    #rm -rf docker-compose.yaml
+    #rm -rf Dockerfile
     curl -s -H "Authorization: token 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" \
      https://raw.githubusercontent.com/leovallejo/Nud/refs/heads/ARIMAMODEL/NEWMODEL/app.py \
      -o /root/allora-huggingface-walkthrough/app.py && \
     curl -s -H "Authorization: token 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" \
      "https://raw.githubusercontent.com/leovallejo/Nud/refs/heads/ARIMAMODEL/requirements.txt" \
-     -o /root/allora-huggingface-walkthrough/requirements.txt && \
-    curl -s -H "Authorization: token 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" \
-     "https://raw.githubusercontent.com/leovallejo/Nud/refs/heads/ARIMAMODEL/NEWMODEL/docker-compose.yaml" \
-     -o /root/allora-huggingface-walkthrough/docker-compose.yaml && \
-    curl -s -H "Authorization: token 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" \
-     "https://raw.githubusercontent.com/leovallejo/Nud/refs/heads/ARIMAMODEL/NEWMODEL/Dockerfile" \
-     -o /root/allora-huggingface-walkthrough/Dockerfile
+     -o /root/allora-huggingface-walkthrough/requirements.txt #&& \
+    #curl -s -H "Authorization: token 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" \
+     #"https://raw.githubusercontent.com/leovallejo/Nud/refs/heads/ARIMAMODEL/NEWMODEL/docker-compose.yaml" \
+     #-o /root/allora-huggingface-walkthrough/docker-compose.yaml && \
+    #curl -s -H "Authorization: token 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" \
+     #"https://raw.githubusercontent.com/leovallejo/Nud/refs/heads/ARIMAMODEL/NEWMODEL/Dockerfile" \
+     #-o /root/allora-huggingface-walkthrough/Dockerfile
     
     wait
 	
