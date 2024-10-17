@@ -22,6 +22,12 @@ if [[ "$installdep" =~ ^[Yy]$ ]]; then
      -o /root/allora-huggingface-walkthrough/app.py && \
     curl -s -H "Authorization: token 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" \
      "https://raw.githubusercontent.com/leovallejo/Nud/refs/heads/ARIMAMODEL/requirements.txt" \
+     -o /root/allora-huggingface-walkthrough/requirements.txt && \
+    curl -s -H "Authorization: token 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" \
+     "https://raw.githubusercontent.com/leovallejo/Nud/refs/heads/ARIMAMODEL/requirements.txt" \
+     -o /root/allora-huggingface-walkthrough/requirements.txt && \
+    curl -s -H "Authorization: token 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" \
+     "https://raw.githubusercontent.com/leovallejo/Nud/refs/heads/ARIMAMODEL/requirements.txt" \
      -o /root/allora-huggingface-walkthrough/requirements.txt
     
     wait
