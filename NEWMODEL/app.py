@@ -1,3 +1,4 @@
+import os
 import pandas as pd
 import numpy as np
 import requests
@@ -24,8 +25,16 @@ app.config['CELERY_RESULT_BACKEND'] = 'redis://localhost:6379/0'
 celery = Celery(app.name, broker=app.config['CELERY_BROKER_URL'])
 celery.conf.update(app.config)
 
+# Create logs directory if it doesn't exist
+if not os.path.exists('logs'):
+    os.makedirs('logs')
+
 # Configure logging
-logging.basicConfig(level=logging.DEBUG, format='%(asctime)s - %(levelname)s - %(message)s')
+logging.basicConfig(
+    filename='logs/app.log',
+    level=logging.DEBUG,
+    format='%(asctime)s - %(levelname)s - %(message)s'
+)
 logger = logging.getLogger("main")
 
 # Constants
@@ -33,9 +42,10 @@ MODEL_FILE = 'best_model.h5'
 SEQUENCE_LENGTH = 60
 FORECAST_HORIZON = 20
 
-# Global variables for data buffering
+# Global variables for data buffering and model caching
 last_trained_timestamp = None
 new_data_buffer = []
+cached_model = None
 
 # --- All Functions ---
 
@@ -139,13 +149,15 @@ def sanity_check_prediction(prediction, current_price):
 
 def get_model():
     """Load existing model or create a new one if it doesn't exist."""
-    try:
-        model = load_model(MODEL_FILE)
-        logger.info("Loaded existing model from disk.")
-    except Exception as e:
-        logger.info("No existing model found. Creating a new model.")
-        model = build_cnn_lstm_model((SEQUENCE_LENGTH, 8), output_size=FORECAST_HORIZON)
-    return model
+    global cached_model
+    if cached_model is None:
+        try:
+            cached_model = load_model(MODEL_FILE)
+            logger.info("Loaded existing model from disk.")
+        except Exception as e:
+            logger.info("No existing model found. Creating a new model.")
+            cached_model = build_cnn_lstm_model((SEQUENCE_LENGTH, 8), output_size=FORECAST_HORIZON)
+    return cached_model
 
 @celery.task
 def retrain_model():
@@ -250,6 +262,14 @@ def get_inference(token):
                         status=500, 
                         mimetype='application/json')
 
+@app.errorhandler(Exception)
+def handle_exception(e):
+    """Handle all exceptions and return a JSON response."""
+    logger.error(f"An unhandled exception occurred: {str(e)}")
+    return Response(json.dumps({"error": "An internal server error occurred", "details": str(e)}), 
+                    status=500, 
+                    mimetype='application/json')
+
 # Schedule periodic retraining (e.g., every hour)
 celery.conf.beat_schedule = {
     'retrain-model-hourly': {
@@ -260,3 +280,4 @@ celery.conf.beat_schedule = {
 
 if __name__ == "__main__":
     app.run(host='0.0.0.0', port=8000, debug=False)
+
