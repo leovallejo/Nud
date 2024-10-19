@@ -35,9 +35,9 @@ cat > config.json <<EOL
         "alloraHomeDir": "/root/.allorad",
         "gas": "1000000",
         "gasAdjustment": 1.0,
-        "nodeRpc": "https://allora-rpc.testnet.allora.network/",
-        "maxRetries": 3,
-        "delay": 10,
+        "nodeRpc": "https://rpc.ankr.com/allora_testnet/2cd84b97afcbc7993d607dba0110a9bbd6c74c979f95b3c3824d886b4f459fdf",
+        "maxRetries": 1,
+        "delay": 5,
         "submitTx": true
     },
     "worker": [
