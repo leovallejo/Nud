@@ -43,7 +43,7 @@ def fetch_historical_data(symbol='bitcoin', days='30'):
     url = f"https://api.coingecko.com/api/v3/coins/{symbol}/market_chart?vs_currency=usd&days={days}&interval=minute"
     headers = {
         'Accept': 'application/json',
-        'X-CoinGecko-API-Key': COINGECKO_API_KEY
+        'X-CoinGecko-API-Key': CG-DoZkhCWwiPPGmoadTVRrfPok
     }
     response = requests.get(url, headers=headers)
     data = response.json()
@@ -231,7 +231,7 @@ def get_inference(token):
                         status=500, 
                         mimetype='application/json')
 
-# Schedule periodic retraining (e.g., every hour) training schedule every 30 minutes
+# Schedule periodic retraining (e.g., every hour) retrain every 30 minutes
 celery.conf.beat_schedule = {
     'retrain-model-hourly': {
         'task': 'app.retrain_model',
