@@ -23,6 +23,9 @@ app.config['CELERY_RESULT_BACKEND'] = 'redis://localhost:6379/0'
 celery = Celery(app.name, broker=app.config['CELERY_BROKER_URL'])
 celery.conf.update(app.config)
 
+# Replace with your CoinGecko Pro API key
+COINGECKO_API_KEY = 'your_api_key_here'
+
 logging.basicConfig(level=logging.DEBUG, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger("main")
 
@@ -36,8 +39,18 @@ new_data_buffer = []
 
 # --- All Functions ---
 
-def get_binance_url(symbol="ETHUSDT", interval="1m", limit=5000):
-    return f"https://api.binance.com/api/v3/klines?symbol={symbol}&interval={interval}&limit={limit}"
+def fetch_historical_data(symbol='bitcoin', days='30'):
+    url = f"https://api.coingecko.com/api/v3/coins/{symbol}/market_chart?vs_currency=usd&days={days}&interval=minute"
+    headers = {
+        'Accept': 'application/json',
+        'X-CoinGecko-API-Key': COINGECKO_API_KEY
+    }
+    response = requests.get(url, headers=headers)
+    data = response.json()
+    prices = data['prices']
+    df = pd.DataFrame(prices, columns=['date', 'close'])
+    df['date'] = pd.to_datetime(df['date'], unit='ms')
+    return df
 
 def handle_nan_values(df):
     df = df.fillna(method='ffill')
@@ -151,7 +164,7 @@ def retrain_model():
     global last_trained_timestamp, new_data_buffer
     with app.app_context():
         try:
-            df = get_updated_data(symbol='ETHUSDT') 
+            df = fetch_historical_data(symbol='bitcoin', days='30')  # Fetch last 30 days of data
             df = add_technical_indicators(df)
             scaled_data, scaler = prepare_data(df)
 
@@ -177,51 +190,24 @@ def retrain_model():
             logger.error(f"Error retraining model: {str(e)}")
             logger.error(traceback.format_exc())
 
-def get_updated_data(symbol="ETHUSDT"):
-    global last_trained_timestamp, new_data_buffer
-    
-    url = get_binance_url(symbol=symbol, limit=1000) 
-    response = requests.get(url)
-    data = response.json()
-    df = pd.DataFrame(data, columns=[
-        "open_time", "open", "high", "low", "close", "volume",
-        "close_time", "quote_asset_volume", "number_of_trades",
-        "taker_buy_base_asset_volume", "taker_buy_quote_asset_volume", "ignore"
-    ])
-    
-    numeric_columns = ["open", "high", "low", "close", "volume"]
-    df[numeric_columns] = df[numeric_columns].astype(float)
-    df["close_time"] = pd.to_datetime(df["close_time"], unit='ms')
-    df = df[["close_time", "open", "high", "low", "close", "volume"]]
-    df.columns = ["date", "open", "high", "low", "close", "volume"]
-    df.set_index("date", inplace=True)
-
-    if last_trained_timestamp:
-        df = df[df.index > last_trained_timestamp]
-    
-    if new_data_buffer:
-        df = pd.concat([df, pd.DataFrame(new_data_buffer)], ignore_index=True)
-
-    return df
-
 @app.route("/inference/<string:token>")
 def get_inference(token):
     try:
         symbol_map = {
-            'ETH': 'ETHUSDT',
-            'BTC': 'BTCUSDT',
-            'BNB': 'BNBUSDT',
-            'SOL': 'SOLUSDT',
-            'ARB': 'ARBUSDT'
+            'ETH': 'ethereum',
+            'BTC': 'bitcoin',
+            'BNB': 'binancecoin',
+            'SOL': 'solana',
+            'ARB': 'arbitrum'
         }
-        token = token.upper()
+        token = token.lower()
         if token in symbol_map:
             symbol = symbol_map[token]
         else:
             logger.error(f"Unsupported token: {token}")
             return Response(json.dumps({"error": "Unsupported token"}), status=400, mimetype='application/json')
 
-        df = get_updated_data(symbol=symbol)
+        df = fetch_historical_data(symbol=symbol, days='30')  # Fetch last 30 days of data
         df = add_technical_indicators(df) 
         scaled_data, scaler = prepare_data(df)  
         last_sequence = scaled_data[-SEQUENCE_LENGTH:]  
@@ -245,11 +231,11 @@ def get_inference(token):
                         status=500, 
                         mimetype='application/json')
 
-# Schedule periodic retraining (e.g., every hour)
+# Schedule periodic retraining (e.g., every hour) training schedule every 30 minutes
 celery.conf.beat_schedule = {
     'retrain-model-hourly': {
         'task': 'app.retrain_model',
-        'schedule': crontab(minute=0, hour='*'), 
+        'schedule': crontab(minute='*/30', hour='*'), 
     },
 }
 
