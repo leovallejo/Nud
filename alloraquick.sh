@@ -37,7 +37,7 @@ cat > config.json <<EOL
         "gasAdjustment": 1.0,
         "nodeRpc": "https://allora-rpc.testnet.allora.network/",
         "maxRetries": 1,
-        "delay": 1,
+        "delay": 10,
         "submitTx": true
     },
     "worker": [
