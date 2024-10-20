@@ -6,9 +6,9 @@ import logging
 from datetime import datetime
 from sklearn.preprocessing import MinMaxScaler
 from tensorflow.keras.models import Sequential, load_model
-from tensorflow.keras.layers import Conv1D, MaxPooling1D, Flatten, Dense, Dropout, LSTM, BatchNormalization
+from tensorflow.keras.layers import Conv1D, MaxPooling1D, Flatten, Dense, Dropout, LSTM
 from tensorflow.keras.optimizers import Adam
-from tensorflow.keras.callbacks import EarlyStopping, ModelCheckpoint
+from tensorflow.keras.callbacks import EarlyStopping, ModelCheckpoint, ReduceLROnPlateau
 from tensorflow.keras.regularizers import l2
 from sklearn.model_selection import train_test_split
 import traceback
@@ -23,15 +23,12 @@ app.config['CELERY_RESULT_BACKEND'] = 'redis://localhost:6379/0'
 celery = Celery(app.name, broker=app.config['CELERY_BROKER_URL'])
 celery.conf.update(app.config)
 
-# Replace with your CoinGecko Pro API key
-COINGECKO_API_KEY = 'your_api_key_here'
-
 logging.basicConfig(level=logging.DEBUG, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger("main")
 
 MODEL_FILE = 'best_model.h5'
 SEQUENCE_LENGTH = 60
-FORECAST_HORIZON = 20  # Predicting the next 20 minutes
+FORECAST_HORIZON = 20
 
 # Global variables for data buffering
 last_trained_timestamp = None
@@ -39,18 +36,8 @@ new_data_buffer = []
 
 # --- All Functions ---
 
-def fetch_historical_data(symbol='bitcoin', days='30'):
-    url = f"https://api.coingecko.com/api/v3/coins/{symbol}/market_chart?vs_currency=usd&days={days}&interval=minute"
-    headers = {
-        'Accept': 'application/json',
-        'X-CoinGecko-API-Key': CG-DoZkhCWwiPPGmoadTVRrfPok
-    }
-    response = requests.get(url, headers=headers)
-    data = response.json()
-    prices = data['prices']
-    df = pd.DataFrame(prices, columns=['date', 'close'])
-    df['date'] = pd.to_datetime(df['date'], unit='ms')
-    return df
+def get_binance_url(symbol="ETHUSDT", interval="1m", limit=5000):
+    return f"https://api.binance.com/api/v3/klines?symbol={symbol}&interval={interval}&limit={limit}"
 
 def handle_nan_values(df):
     df = df.fillna(method='ffill')
@@ -61,10 +48,8 @@ def add_technical_indicators(df):
     df['MA7'] = df['close'].rolling(window=7).mean()
     df['MA14'] = df['close'].rolling(window=14).mean()
     df['RSI'] = calculate_rsi(df['close'], window=14)
-    df['MACD'] = calculate_macd(df['close'])
-    df['EMA20'] = df['close'].ewm(span=20, adjust=False).mean()
-    df['Bollinger_Upper'] = df['MA14'] + (df['close'].rolling(window=14).std() * 2)
-    df['Bollinger_Lower'] = df['MA14'] - (df['close'].rolling(window=14).std() * 2)
+    df['Bollinger_Upper'] = df['MA14'] + 2 * df['close'].rolling(window=14).std()
+    df['Bollinger_Lower'] = df['MA14'] - 2 * df['close'].rolling(window=14).std()
     df = handle_nan_values(df)
     return df
 
@@ -75,13 +60,8 @@ def calculate_rsi(prices, window=14):
     rs = gain / np.maximum(loss, 1e-10)
     return 100 - (100 / (1 + rs))
 
-def calculate_macd(prices):
-    exp1 = prices.ewm(span=12, adjust=False).mean()
-    exp2 = prices.ewm(span=26, adjust=False).mean()
-    return exp1 - exp2
-
 def prepare_data(df):
-    features = ['open', 'high', 'low', 'close', 'volume', 'MA7', 'MA14', 'RSI', 'MACD', 'EMA20', 'Bollinger_Upper', 'Bollinger_Lower']
+    features = ['open', 'high', 'low', 'close', 'volume', 'MA7', 'MA14', 'RSI', 'Bollinger_Upper', 'Bollinger_Lower']
     df = handle_nan_values(df)
     
     for feature in features:
@@ -102,8 +82,8 @@ def create_sequences(data, sequence_length, forecast_horizon=20):
     sequences = []
     targets = []
     for i in range(len(data) - sequence_length - forecast_horizon + 1):
-        seq = data[i:i + sequence_length]
-        target = data[i + sequence_length:i + sequence_length + forecast_horizon, 3]  # Assuming 'close' is at index 3
+        seq = data[i:i+sequence_length]
+        target = data[i+sequence_length:i+sequence_length+forecast_horizon, 3]  # Assuming 'close' is at index 3
         sequences.append(seq)
         targets.append(target)
     return np.array(sequences), np.array(targets)
@@ -116,12 +96,10 @@ def custom_loss(y_true, y_pred):
 def build_cnn_lstm_model(input_shape, output_size=20):
     model = Sequential([
         Conv1D(64, kernel_size=3, activation='relu', input_shape=input_shape),
-        BatchNormalization(),
         MaxPooling1D(pool_size=2),
         Conv1D(128, kernel_size=3, activation='relu'),
-        BatchNormalization(),
         MaxPooling1D(pool_size=2),
-        LSTM(64, return_sequences=True),
+        LSTM(128, return_sequences=True),
         LSTM(64),
         Flatten(),
         Dense(64, activation='relu', kernel_regularizer=l2(0.01)),
@@ -145,26 +123,28 @@ def fallback_prediction(df):
     return round(df['close'].tail(20).mean(), 2)
 
 def sanity_check_prediction(prediction, current_price):
-    max_change = 0.1  # 10% deviation
+    max_change = 0.1
     lower_bound = current_price * (1 - max_change)
     upper_bound = current_price * (1 + max_change)
     return max(min(prediction, upper_bound), lower_bound)
 
+# Function to load or create a new model
 def get_model():
     try:
         model = load_model(MODEL_FILE)
         logger.info("Loaded existing model from disk.")
-    except Exception as e:
+    except:
         logger.info("No existing model found. Creating a new model.")
-        model = build_cnn_lstm_model((SEQUENCE_LENGTH, 12), output_size=FORECAST_HORIZON)  # Adjust input shape for new features
+        model = build_cnn_lstm_model((SEQUENCE_LENGTH, 10), output_size=FORECAST_HORIZON)  # Updated input shape
     return model
 
+# Celery task for model retraining
 @celery.task
 def retrain_model():
     global last_trained_timestamp, new_data_buffer
     with app.app_context():
         try:
-            df = fetch_historical_data(symbol='bitcoin', days='30')  # Fetch last 30 days of data
+            df = get_updated_data(symbol='ETHUSDT')
             df = add_technical_indicators(df)
             scaled_data, scaler = prepare_data(df)
 
@@ -175,14 +155,14 @@ def retrain_model():
             callbacks = [
                 EarlyStopping(patience=10, restore_best_weights=True),
                 ModelCheckpoint(MODEL_FILE, save_best_only=True),
-                NanTerminateCallback()
+                NanTerminateCallback(),
+                ReduceLROnPlateau(patience=5, factor=0.5)  # Reduce learning rate when a metric has stopped improving
             ]
             model.fit(X_train, y_train, validation_data=(X_test, y_test),
-                      epochs=50, batch_size=32, callbacks=callbacks, verbose=0)
+                      epochs=100, batch_size=32, callbacks=callbacks, verbose=1)  # Increased epochs
 
             model.save(MODEL_FILE)
             logger.info("Model retrained and saved successfully!")
-
             last_trained_timestamp = datetime.utcnow()
             new_data_buffer = []
 
@@ -190,34 +170,64 @@ def retrain_model():
             logger.error(f"Error retraining model: {str(e)}")
             logger.error(traceback.format_exc())
 
+# Function to fetch updated data 
+def get_updated_data(symbol="ETHUSDT"):
+    global last_trained_timestamp, new_data_buffer
+    
+    url = get_binance_url(symbol=symbol, limit=1000) 
+    response = requests.get(url)
+    data = response.json()
+    df = pd.DataFrame(data, columns=[
+        "open_time", "open", "high", "low", "close", "volume",
+        "close_time", "quote_asset_volume", "number_of_trades",
+        "taker_buy_base_asset_volume", "taker_buy_quote_asset_volume", "ignore"
+    ])
+    
+    numeric_columns = ["open", "high", "low", "close", "volume"]
+    df[numeric_columns] = df[numeric_columns].astype(float)
+    df["close_time"] = pd.to_datetime(df["close_time"], unit='ms')
+    df = df[["close_time", "open", "high", "low", "close", "volume"]]
+    df.columns = ["date", "open", "high", "low", "close", "volume"]
+    df.set_index("date", inplace=True)
+
+    if last_trained_timestamp:
+        df = df[df.index > last_trained_timestamp]
+    
+    if new_data_buffer:
+        df = pd.concat([df, pd.DataFrame(new_data_buffer)], ignore_index=True)
+
+    return df
+
+# --- Routes and Functions ---
+
 @app.route("/inference/<string:token>")
 def get_inference(token):
     try:
         symbol_map = {
-            'ETH': 'ethereum',
-            'BTC': 'bitcoin',
-            'BNB': 'binancecoin',
-            'SOL': 'solana',
-            'ARB': 'arbitrum'
+            'ETH': 'ETHUSDT',
+            'BTC': 'BTCUSDT',
+            'BNB': 'BNBUSDT',
+            'SOL': 'SOLUSDT',
+            'ARB': 'ARBUSDT'
         }
-        token = token.lower()
+        token = token.upper()
         if token in symbol_map:
             symbol = symbol_map[token]
         else:
             logger.error(f"Unsupported token: {token}")
             return Response(json.dumps({"error": "Unsupported token"}), status=400, mimetype='application/json')
 
-        df = fetch_historical_data(symbol=symbol, days='30')  # Fetch last 30 days of data
+        df = get_updated_data(symbol=symbol)
+
         df = add_technical_indicators(df) 
         scaled_data, scaler = prepare_data(df)  
         last_sequence = scaled_data[-SEQUENCE_LENGTH:]  
-        last_sequence = last_sequence.reshape(1, SEQUENCE_LENGTH, 12)  # Adjust for new feature count
+        last_sequence = last_sequence.reshape(1, SEQUENCE_LENGTH, 10)  # Updated input shape
 
         model = get_model()
         predictions = model.predict(last_sequence)
-
-        predicted_prices = scaler.inverse_transform(np.column_stack((predictions.reshape(-1, 1), np.zeros((FORECAST_HORIZON, 11)))))
-        final_prediction = round(float(predicted_prices[-1][0]), 2) 
+        predicted_prices = scaler.inverse_transform(np.column_stack((predictions.reshape(-1, 1), np.zeros((FORECAST_HORIZON, 9)))))
+        final_prediction = round(float(predicted_prices[-1][0]), 2)
 
         current_price = df['close'].iloc[-1]
         final_prediction = sanity_check_prediction(final_prediction, current_price)
@@ -231,11 +241,11 @@ def get_inference(token):
                         status=500, 
                         mimetype='application/json')
 
-# Schedule periodic retraining (e.g., every hour) retrain every 30 minutes
+# Schedule periodic retraining (e.g., every hour)
 celery.conf.beat_schedule = {
     'retrain-model-hourly': {
         'task': 'app.retrain_model',
-        'schedule': crontab(minute='*/30', hour='*'), 
+        'schedule': crontab(minute='*/20', hour='*'), 
     },
 }
 
