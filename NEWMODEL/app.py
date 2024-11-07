@@ -1,4 +1,3 @@
-
 import pandas as pd
 import numpy as np
 import requests
@@ -34,8 +33,6 @@ FORECAST_HORIZON = 20
 # Global variables for data buffering
 last_trained_timestamp = None
 new_data_buffer = []
-
-# --- All Functions ---
 
 def get_binance_url(symbol="ETHUSDT", interval="1m", limit=5000):
     return f"https://api.binance.com/api/v3/klines?symbol={symbol}&interval={interval}&limit={limit}"
@@ -82,7 +79,7 @@ def create_sequences(data, sequence_length, forecast_horizon=20):
     targets = []
     for i in range(len(data) - sequence_length - forecast_horizon + 1):
         seq = data[i:i+sequence_length]
-        target = data[i+sequence_length:i+sequence_length+forecast_horizon, 3]  # Assuming 'close' is at index 3
+        target = data[i+sequence_length:i+sequence_length+forecast_horizon, 3]
         sequences.append(seq)
         targets.append(target)
     return np.array(sequences), np.array(targets)
@@ -127,7 +124,6 @@ def sanity_check_prediction(prediction, current_price):
     upper_bound = current_price * (1 + max_change)
     return max(min(prediction, upper_bound), lower_bound)
 
-# Function to load or create a new model
 def get_model():
     try:
         model = load_model(MODEL_FILE)
@@ -137,23 +133,15 @@ def get_model():
         model = build_cnn_lstm_model((SEQUENCE_LENGTH, 8), output_size=FORECAST_HORIZON)
     return model
 
-# Celery task for model retraining
 @celery.task
 def retrain_model():
     global last_trained_timestamp, new_data_buffer
     with app.app_context():
         try:
-            # 1. Fetch new data (combine buffer and recent data)
-            df = get_updated_data(symbol='ETHUSDT') 
-
-            # 2. Preprocess data
+            df = get_updated_data(symbol='ETHUSDT')
             df = add_technical_indicators(df)
             scaled_data, scaler = prepare_data(df)
-
-            # 3. Load existing model or create a new one
             model = get_model()
-
-            # 4. Retrain the model 
             X, y = create_sequences(scaled_data, SEQUENCE_LENGTH, FORECAST_HORIZON)
             X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, shuffle=False)
             callbacks = [
@@ -162,26 +150,18 @@ def retrain_model():
                 NanTerminateCallback()
             ]
             model.fit(X_train, y_train, validation_data=(X_test, y_test),
-                        epochs=50, batch_size=32, callbacks=callbacks, verbose=0)
-
-            # 5. Save the retrained model
+                     epochs=50, batch_size=32, callbacks=callbacks, verbose=0)
             model.save(MODEL_FILE)
             logger.info("Model retrained and saved successfully!")
-
-            # Update last trained timestamp and clear buffer
             last_trained_timestamp = datetime.utcnow()
             new_data_buffer = []
-
         except Exception as e:
             logger.error(f"Error retraining model: {str(e)}")
             logger.error(traceback.format_exc())
 
-# Function to fetch updated data 
 def get_updated_data(symbol="ETHUSDT"):
     global last_trained_timestamp, new_data_buffer
-    
-    # 1. Fetch data from Binance
-    url = get_binance_url(symbol=symbol, limit=1000) 
+    url = get_binance_url(symbol=symbol, limit=1000)
     response = requests.get(url)
     data = response.json()
     df = pd.DataFrame(data, columns=[
@@ -190,7 +170,6 @@ def get_updated_data(symbol="ETHUSDT"):
         "taker_buy_base_asset_volume", "taker_buy_quote_asset_volume", "ignore"
     ])
     
-    # 2. Data Processing
     numeric_columns = ["open", "high", "low", "close", "volume"]
     df[numeric_columns] = df[numeric_columns].astype(float)
     df["close_time"] = pd.to_datetime(df["close_time"], unit='ms')
@@ -198,17 +177,13 @@ def get_updated_data(symbol="ETHUSDT"):
     df.columns = ["date", "open", "high", "low", "close", "volume"]
     df.set_index("date", inplace=True)
 
-    # 3. Filter for new data (if last_trained_timestamp is available)
     if last_trained_timestamp:
         df = df[df.index > last_trained_timestamp]
     
-    # 4. Combine new data from the buffer
     if new_data_buffer:
         df = pd.concat([df, pd.DataFrame(new_data_buffer)], ignore_index=True)
 
     return df
-
-# --- Routes and Functions ---
 
 @app.route("/inference/<string:token>")
 def get_inference(token):
@@ -221,49 +196,65 @@ def get_inference(token):
             'ARB': 'ARBUSDT'
         }
         token = token.upper()
-        if token in symbol_map:
-            symbol = symbol_map[token]
-        else:
+        if token not in symbol_map:
             logger.error(f"Unsupported token: {token}")
             return Response(json.dumps({"error": "Unsupported token"}), status=400, mimetype='application/json')
 
+        symbol = symbol_map[token]
+        
         # Fetch data
         df = get_updated_data(symbol=symbol)
+        current_price = float(df['close'].iloc[-1])
+        
+        # Add Technical Indicators
+        df = add_technical_indicators(df)
 
-        # --- Prediction Logic ---
+        # Prepare data for prediction
+        scaled_data, scaler = prepare_data(df)
+        last_sequence = scaled_data[-SEQUENCE_LENGTH:].reshape(1, SEQUENCE_LENGTH, 8)
 
-        # 1. Add Technical Indicators HERE
-        df = add_technical_indicators(df) 
-
-        # 2. Prepare data for prediction
-        scaled_data, scaler = prepare_data(df)  
-        last_sequence = scaled_data[-SEQUENCE_LENGTH:]  
-        last_sequence = last_sequence.reshape(1, SEQUENCE_LENGTH, 8) 
-
-        # 3. Load the trained model
+        # Load model and make predictions
         model = get_model()
-
-        # 3. Make predictions
         predictions = model.predict(last_sequence)
         predicted_prices = scaler.inverse_transform(np.column_stack((predictions.reshape(-1, 1), np.zeros((FORECAST_HORIZON, 7)))))
-        final_prediction = round(float(predicted_prices[-1][0]), 2) 
+        
+        # Get predictions for different time horizons
+        predictions_list = [round(float(price[0]), 2) for price in predicted_prices]
+        
+        # Calculate price changes
+        short_term_change = ((predictions_list[4] - current_price) / current_price) * 100
+        medium_term_change = ((predictions_list[9] - current_price) / current_price) * 100
+        long_term_change = ((predictions_list[-1] - current_price) / current_price) * 100
 
-        # 4. Apply sanity checks (optional but recommended)
-        current_price = df['close'].iloc[-1]
-        final_prediction = sanity_check_prediction(final_prediction, current_price)
+        response_data = {
+            "current_price": round(current_price, 2),
+            "predictions": {
+                "short_term": {
+                    "price": predictions_list[4],
+                    "change_percent": round(short_term_change, 2)
+                },
+                "medium_term": {
+                    "price": predictions_list[9],
+                    "change_percent": round(medium_term_change, 2)
+                },
+                "long_term": {
+                    "price": predictions_list[-1],
+                    "change_percent": round(long_term_change, 2)
+                }
+            },
+            "timestamp": datetime.utcnow().isoformat(),
+            "symbol": symbol
+        }
 
-        # --- End of Prediction Logic ---
-
-        return Response(str(final_prediction), status=200, mimetype='text/plain')
+        return Response(json.dumps(response_data), status=200, mimetype='application/json')
 
     except Exception as e:
         logger.error(f"An error occurred: {str(e)}")
         logger.error(traceback.format_exc())
         return Response(json.dumps({"error": "An internal server error occurred", "details": str(e)}), 
-                        status=500, 
-                        mimetype='application/json')
+                       status=500, 
+                       mimetype='application/json')
 
-# Schedule periodic retraining (e.g., every hour)
 celery.conf.beat_schedule = {
     'retrain-model-hourly': {
         'task': 'app.retrain_model',
