@@ -2,7 +2,9 @@ rm -rf alloraquick.sh
 
 curl -H "Authorization: token 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" \
 https://raw.githubusercontent.com/leovallejo/Nud/refs/heads/ARIMAMODEL/alloraquick.sh > alloraquick.sh
+
 chmod +x alloraquick.sh 
+
 ./alloraquick.sh
 
 
