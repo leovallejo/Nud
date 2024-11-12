@@ -35,12 +35,13 @@ cat > config.json <<EOL
         "alloraHomeDir": "/root/.allorad",
         "gas": "1000000",
         "gasAdjustment": 1.0,
-        "nodeRpc": "https://allora-rpc.testnet.allora.network/",
-        "maxRetries": 3,
+        "nodeRpc": "https://rpc.ankr.com/allora_testnet/",
+        "maxRetries": 1,
         "delay": 1,
-        "submitTx": true
+        "submitTx": false
     },
     "worker": [
+        
         {
             "topicId": 7,
             "inferenceEntrypointName": "api-worker-reputer",
